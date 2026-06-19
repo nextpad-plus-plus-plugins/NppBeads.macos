@@ -78,7 +78,7 @@ endif()
 #  Target 2 — Beads.app (standalone macOS app, same code)
 # ─────────────────────────────────────────────────────────────────────────
 if(NPPBEADS_BUILD_APP)
-    set(BEADS_APP_VERSION "0.9.1")
+    set(BEADS_APP_VERSION "0.9.2")
 
     # Walk resources/viewer/ and resources/beads.icns recursively, register
     # each file as a target source with MACOSX_PACKAGE_LOCATION pointing
@@ -113,6 +113,17 @@ if(NPPBEADS_BUILD_APP)
         list(APPEND BEADS_BUNDLE_RESOURCES "${BEADS_ICON_PATH}")
     else()
         message(WARNING "Beads.app: resources/beads.icns missing — building without an icon")
+    endif()
+
+    # Tahoe Liquid Glass app icon, compiled from resources/beads.icon via actool
+    # (see tools — regenerated out-of-band). CFBundleIconName=beads (set in
+    # Info.plist.in) makes macOS 26+ render the glass icon from Assets.car;
+    # older macOS falls back to CFBundleIconFile=beads.icns.
+    set(BEADS_ASSETS_CAR "${CMAKE_CURRENT_SOURCE_DIR}/resources/Assets.car")
+    if(EXISTS "${BEADS_ASSETS_CAR}")
+        set_source_files_properties("${BEADS_ASSETS_CAR}" PROPERTIES
+            MACOSX_PACKAGE_LOCATION "Resources")
+        list(APPEND BEADS_BUNDLE_RESOURCES "${BEADS_ASSETS_CAR}")
     endif()
 
     # DMG background image. Ships INSIDE the bundle (Contents/Resources)
