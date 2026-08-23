@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
-project(NppBeads LANGUAGES CXX OBJCXX)
+project(NppBeads VERSION 0.9.3 LANGUAGES CXX OBJCXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_OBJCXX_STANDARD 17)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
-set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0")
+set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0")
 set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64")
 
 set(NPP_MACOS_DIR      "${CMAKE_SOURCE_DIR}/../../notepad-plus-plus-macos")
@@ -62,6 +62,9 @@ if(NPPBEADS_BUILD_PLUGIN)
         -fvisibility=hidden
         $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
     set_target_properties(NppBeads PROPERTIES PREFIX "" SUFFIX ".dylib")
+    # Bake the Mach-O current_version so Plugins Admin reports the installed
+    # version (was 0.0.0 before). Kept in sync with the catalog's version.
+    target_link_options(NppBeads PRIVATE "-Wl,-current_version,${PROJECT_VERSION}")
 
     set(PLUGIN_INSTALL_DIR "$ENV{HOME}/.nextpad++/plugins/NppBeads")
     install(TARGETS NppBeads DESTINATION "${PLUGIN_INSTALL_DIR}")
@@ -78,7 +81,7 @@ endif()
 #  Target 2 — Beads.app (standalone macOS app, same code)
 # ─────────────────────────────────────────────────────────────────────────
 if(NPPBEADS_BUILD_APP)
-    set(BEADS_APP_VERSION "0.9.2")
+    set(BEADS_APP_VERSION "0.9.4")
 
     # Walk resources/viewer/ and resources/beads.icns recursively, register
     # each file as a target source with MACOSX_PACKAGE_LOCATION pointing
