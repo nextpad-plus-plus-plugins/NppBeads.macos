@@ -231,6 +231,17 @@ static void rescanProjectFromCurrentBuffer() {
 // ─────────────────────────────────────────────────────────────────────────
 //  Menu commands
 // ─────────────────────────────────────────────────────────────────────────
+// NPPM_DMM_SETPANELINFO (host ≥ 1.1.0) — not yet present in this repo's
+// bundled NppPluginInterfaceMac.h; local copy matches the host header. On
+// older hosts the message returns 0 and is simply ignored.
+#ifndef NPPM_DMM_SETPANELINFO
+typedef struct NppPanelInfo {
+    const char *moduleName;   /* plugin folder/module name */
+    int32_t     cmdIndex;     /* FuncItem index of the show/toggle command */
+} NppPanelInfo;
+#define NPPM_DMM_SETPANELINFO (NPPMSG + 505)
+#endif
+
 static void cmdTogglePanel() {
     ensurePanel();
 
@@ -241,6 +252,16 @@ static void cmdTogglePanel() {
                                        (intptr_t)"NppBeads");
         if (h > 0) g_panelHandle = (uint64_t)h;
         else        ensureFloatingPanel();
+        if (g_panelHandle) {
+            // Declare restore metadata so a panel visible at quit reopens at
+            // the next launch via "Show Beads panel" (kCmdShowPanel — this
+            // toggle itself, a plain show/hide).
+            NppPanelInfo info;
+            info.moduleName = "NppBeads";
+            info.cmdIndex   = kCmdShowPanel;
+            sNpp._sendMessage(sNpp._nppHandle, NPPM_DMM_SETPANELINFO,
+                              (uintptr_t)g_panelHandle, (intptr_t)&info);
+        }
     }
 
     BOOL currentlyShown = panelIsShown();
