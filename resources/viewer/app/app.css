@@ -1,0 +1,1338 @@
+/* NppBeads — styles for native-rendered app views (board / issues /
+   detail). Palette chosen to blend with both the dicklesworthstone
+   Rich viewer (when embedded side-by-side) and native macOS. Uses CSS
+   custom properties keyed on [data-theme] so the native layer can
+   toggle theme by flipping one attribute on <html>. */
+
+:root {
+  /* Tell WebKit which native-widget palette to render. Without this,
+     default-styled scrollbars + form controls ignore [data-theme]
+     and stay light even when our dark vars are active — that's how
+     the Activity view's overflow-y:auto scrollbar ended up white
+     on a dark background. The dark override lives below. */
+  color-scheme: light;
+  --bg:        #f8fafc;
+  --bg-elev:   #ffffff;
+  --border:    #e2e8f0;
+  --border-strong: #cbd5e1;
+  --text:      #0f172a;
+  --text-muted:#475569;
+  --text-fade: #94a3b8;
+  --accent:    #0ea5e9;
+  --accent-fg: #ffffff;
+  --shadow:    0 1px 2px rgba(15,23,42,0.04), 0 2px 4px rgba(15,23,42,0.04);
+  --col-open:       #0ea5e9;
+  --col-inprogress: #eab308;
+  --col-blocked:    #ef4444;
+  --col-closed:     #64748b;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg:        #0f172a;
+  --bg-elev:   #1e293b;
+  --border:    #334155;
+  --border-strong: #475569;
+  --text:      #e2e8f0;
+  --text-muted:#94a3b8;
+  --text-fade: #64748b;
+  --accent:    #38bdf8;
+  --accent-fg: #0c1222;
+  --shadow:    0 1px 2px rgba(0,0,0,0.3), 0 2px 4px rgba(0,0,0,0.2);
+  --col-open:       #38bdf8;
+  --col-inprogress: #facc15;
+  --col-blocked:    #f87171;
+  --col-closed:     #94a3b8;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font: 12px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text",
+        "Helvetica Neue", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  height: 100%;
+  overflow: hidden;
+}
+body { display: flex; flex-direction: column; }
+
+/* ─── Board layout ─────────────────────────────────────────────────── */
+.board-hdr {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  flex: 0 0 auto;
+}
+.mode-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  font-size: 11px;
+}
+.mode-toggle .mode-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 3px 10px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+}
+.mode-toggle .mode-btn + .mode-btn { border-left: 1px solid var(--border); }
+.mode-toggle .mode-btn[aria-selected="true"] {
+  background: var(--accent, #2563eb);
+  color: #fff;
+}
+.mode-toggle .mode-btn:hover:not([aria-selected="true"]) {
+  background: var(--bg-elev);
+  color: var(--text);
+}
+.new-issue-btn {
+  margin-left: auto;
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text);
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 11px;
+  border-radius: 6px;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+}
+.new-issue-btn:hover {
+  background: var(--accent, #2563eb);
+  color: #fff;
+  border-color: var(--accent, #2563eb);
+}
+.new-issue-modal { width: min(560px, 92vw); }
+.chip-input {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: 4px;
+  padding: 4px 6px;
+  min-height: 32px;
+}
+.chip-input:focus-within {
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: -1px;
+  border-color: transparent;
+}
+.chip-input .chip-list {
+  display: contents;
+}
+.chip-input .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1px 6px 1px 8px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--text);
+}
+.chip-input .chip-rm {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 2px;
+  line-height: 1;
+}
+.chip-input .chip-rm:hover { color: #dc2626; }
+.chip-input input {
+  border: 0 !important;
+  outline: none !important;
+  padding: 3px 2px !important;
+  background: transparent !important;
+  flex: 1;
+  min-width: 120px;
+}
+.chip-input input:focus { outline: none !important; }
+.modal-edit { width: min(640px, 94vw); max-height: 88vh; }
+.modal-edit .modal-body { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; }
+.modal-edit .field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.modal-edit .field-label { color: var(--text-muted); font-size: 11px; letter-spacing: 0.02em; }
+.modal-edit .field-row { display: flex; gap: 8px; }
+.modal-edit .field-row .field { flex: 1; min-width: 0; }
+.modal-edit input[type="text"],
+.modal-edit select,
+.modal-edit textarea {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  padding: 6px 8px;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+  min-width: 0;
+}
+.modal-edit textarea.edit-desc {
+  resize: vertical;
+  min-height: 100px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.modal-edit input:focus,
+.modal-edit select:focus,
+.modal-edit textarea:focus {
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: -1px;
+  border-color: transparent;
+}
+.new-issue-form { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px 16px; }
+.new-issue-form .field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.new-issue-form .field-label { color: var(--text-muted); font-size: 11px; letter-spacing: 0.02em; }
+.new-issue-form .field-label .req  { color: #dc2626; }
+.new-issue-form .field-label .hint { color: var(--text-muted); font-weight: normal; }
+.new-issue-form .field-row { display: flex; gap: 10px; }
+.new-issue-form .field-row .field { flex: 1; }
+.new-issue-form input[type="text"],
+.new-issue-form select,
+.new-issue-form textarea {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  padding: 6px 8px;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+}
+.new-issue-form textarea {
+  resize: vertical;
+  min-height: 72px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.new-issue-form input:focus,
+.new-issue-form select:focus,
+.new-issue-form textarea:focus {
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: -1px;
+  border-color: transparent;
+}
+.modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+.modal-actions .form-status {
+  margin-right: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.modal-actions .form-status.is-error { color: #dc2626; }
+.btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-elev);
+  color: var(--text);
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.btn-primary { background: var(--accent, #2563eb); color: #fff; border-color: var(--accent, #2563eb); }
+.btn-primary:hover { filter: brightness(1.05); }
+.btn-primary:disabled { opacity: 0.6; cursor: wait; }
+.btn-secondary:hover { background: var(--bg); }
+
+/* Phase 3.5 — destructive action button for Delete. Muted in its
+   resting state (no red wash) so it doesn't grab the eye; only the
+   text turns red. Hover/active show full red — intentional, so
+   the user's finger hovers on a visibly dangerous target. */
+.btn-danger {
+  color: #dc2626;
+  border-color: rgba(220, 38, 38, 0.35);
+  background: transparent;
+}
+.btn-danger:hover {
+  background: #dc2626;
+  color: #fff;
+  border-color: #dc2626;
+}
+.btn-danger:disabled { opacity: 0.6; cursor: wait; }
+
+/* Phase 3.5 — chip type tag (new-issue + detail-modal chips that aren't
+   the default "blocks" type). Small bubble after the id. */
+.chip-input .chip-type-tag,
+.chip-existing .chip-type-tag {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgba(127, 127, 127, 0.18);
+  color: var(--text-muted, #888);
+  margin-left: 4px;
+  letter-spacing: 0.02em;
+}
+
+/* Phase 3.5 — chip-input row holds the bead-id input + type select
+   side by side. The existing .chip-input is a flex parent that wraps;
+   this is a nested row that keeps input and type together. */
+.chip-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.chip-input-row input {
+  flex: 1;
+}
+.chip-input-type {
+  flex: 0 0 auto;
+}
+.dep-type-select {
+  font-size: 10px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  max-width: 130px;
+}
+
+/* Phase 3.5 — detail-modal dep editor: grouped into Blocked-by /
+   Blocks sections, each with a chip list + add-row. Replaces the
+   Phase 3 read-only .modal-deps section. */
+.modal-dep-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.modal-dep-hdr {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0;
+}
+.dep-status-line {
+  font-size: 11px;
+  color: var(--text-muted);
+  min-height: 14px;
+}
+.dep-status-line.is-error { color: #dc2626; }
+.dep-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dep-group-hdr {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.dep-group-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.dep-group-hint {
+  font-size: 10px;
+  color: var(--text-fade, #9ca3af);
+}
+.dep-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-height: 22px;
+}
+.dep-empty {
+  font-size: 11px;
+  color: var(--text-fade, #9ca3af);
+  font-style: italic;
+}
+.chip-existing {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1px 6px 1px 8px;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.chip-existing .chip-rm {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 2px;
+  line-height: 1;
+}
+.chip-existing .chip-rm:hover { color: #dc2626; }
+.chip-existing .chip-rm:disabled { opacity: 0.4; cursor: wait; }
+.dep-chip-id {
+  color: inherit;
+  text-decoration: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+.dep-chip-id:hover { text-decoration: underline; }
+.dep-add-row {
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  background: var(--bg);
+}
+.dep-add-row input {
+  border: 0 !important;
+  outline: none !important;
+  background: transparent !important;
+  font-size: 12px;
+  flex: 1;
+  min-width: 120px;
+}
+
+/* Phase 6 — comments thread inside the detail modal. Positioned after
+   the dep editor and before the timestamps block. */
+.modal-comments {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.modal-comments-hdr {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0;
+}
+.comments-status-line {
+  font-size: 11px;
+  color: var(--text-muted);
+  min-height: 14px;
+}
+.comments-status-line.is-error { color: #dc2626; }
+.comments-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.comments-loading, .comments-empty, .comments-error {
+  font-size: 11px;
+  color: var(--text-fade, #9ca3af);
+  font-style: italic;
+  margin: 0;
+}
+.comments-error { color: #dc2626; font-style: normal; }
+.comment-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.comment-hdr {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 11px;
+}
+.comment-author {
+  color: var(--accent, #2563eb);
+  font-weight: 600;
+}
+.comment-ts {
+  color: var(--text-fade, #9ca3af);
+  font-size: 10px;
+}
+.md-body {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+/* Markdown niceties. Scoped so they don't bleed into the rest of the modal. */
+.md-body p { margin: 0 0 6px 0; }
+.md-body p:last-child { margin-bottom: 0; }
+.md-body code {
+  background: rgba(127,127,127,0.15);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+.md-body pre {
+  background: rgba(127,127,127,0.1);
+  padding: 6px 8px;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  margin: 6px 0;
+}
+.md-body pre code { background: transparent; padding: 0; }
+.md-body a { color: var(--accent, #2563eb); text-decoration: underline; }
+.md-body ul, .md-body ol { margin: 4px 0 6px 18px; padding: 0; }
+.md-body blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 8px;
+  color: var(--text-muted);
+  margin: 4px 0;
+}
+.comments-add {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+.comments-add-body {
+  flex: 1;
+  min-height: 52px;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+}
+.comments-add-body:focus {
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: -1px;
+  border-color: transparent;
+}
+.comments-add-submit {
+  flex: 0 0 auto;
+}
+.comments-add .md-field { flex: 1; min-width: 0; }
+
+/* Raw | Markdown field (detail modal description + comment compose).
+   Toggle sits in the label row; the preview replaces the textarea
+   in-place and reuses the .md-body typography above. */
+.md-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.md-field-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-muted);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+.md-mode .mode-btn { padding: 1px 8px; font-size: 10px; }
+.md-preview {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  padding: 8px 10px;
+  min-height: 60px;
+  max-height: 360px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.md-preview h1, .md-preview h2, .md-preview h3 { margin: 6px 0 4px; line-height: 1.3; }
+.md-preview h1 { font-size: 15px; }
+.md-preview h2 { font-size: 14px; }
+.md-preview h3 { font-size: 13px; }
+.md-preview table { border-collapse: collapse; margin: 6px 0; font-size: 11px; }
+.md-preview th, .md-preview td { border: 1px solid var(--border); padding: 2px 6px; }
+.md-preview input[type="checkbox"] { margin-right: 4px; }
+.md-empty { color: var(--text-fade, #9ca3af); font-style: italic; margin: 0; }
+
+/* Phase 6 — Activity feed view (app/activity.html). Reverse-chron list
+   of recently-touched issues. Each row expands on hover to show a
+   preview (description + extra metadata); a dedicated "Open" button is
+   the only click-to-jump path into the Board detail modal. */
+.activity-hdr {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  flex: 0 0 auto;   /* header height fixed; list takes the rest */
+}
+.activity-hdr-left {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.activity-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.activity-summary {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+/* Right-aligned Activity controls: expand/collapse-all + facet filters. */
+.activity-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px 8px;
+  margin-left: auto;
+}
+.activity-expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.activity-expand input { margin: 0; cursor: pointer; }
+.activity-controls .filter { position: relative; display: inline-flex; }
+.activity-controls .filter-btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text);
+  padding: 3px 9px;
+  font: inherit;
+  font-size: 11px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+.activity-controls .filter-btn:hover { background: var(--bg); }
+.activity-controls .filter.is-open .filter-btn,
+.activity-controls .filter-btn.is-active {
+  border-color: var(--accent, #2563eb);
+  color: var(--accent, #2563eb);
+}
+.activity-controls .filter-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 50;
+  min-width: 150px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+.activity-controls .filter-opt {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--text);
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.activity-controls .filter-opt:hover { background: var(--bg); }
+.activity-controls .filter-opt input { margin: 0; cursor: pointer; }
+.activity-controls .filter-opt-label { overflow: hidden; text-overflow: ellipsis; }
+.activity-controls .filter-all {
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  margin-bottom: 2px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+/* Scrolling container — flex-1 inside body's flex column so the panel's
+   webview-height drives the visible area. `min-height: 0` is the
+   flexbox trick required for overflow to actually kick in; without it
+   the child would refuse to shrink below its intrinsic content height.
+*/
+.activity-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+.activity-empty {
+  font-size: 12px;
+  color: var(--text-fade, #9ca3af);
+  font-style: italic;
+  padding: 20px 14px;
+  text-align: center;
+}
+.activity-row {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--border);
+  transition: background 80ms ease-in;
+}
+.activity-row:hover { background: var(--bg-elev); }
+.activity-row-main {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+}
+.activity-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--accent, #2563eb);
+  text-decoration: none;
+  white-space: nowrap;
+  user-select: text;    /* let the user copy the id */
+}
+.activity-title-cell {
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity-meta {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 10px;
+}
+.activity-assignee {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 10px;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity-time {
+  color: var(--text-fade, #9ca3af);
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+}
+.activity-open-btn {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--accent, #2563eb);
+  background: transparent;
+  color: var(--accent, #2563eb);
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: 500;
+  opacity: 0;                            /* only visible on row hover */
+  transition: opacity 80ms ease-in;
+}
+.activity-row:hover .activity-open-btn,
+.activity-open-btn:focus-visible { opacity: 1; }
+.activity-open-btn:hover {
+  background: var(--accent, #2563eb);
+  color: #fff;
+}
+/* Preview — collapsed by default, expanded on row hover. Content is
+   rendered up-front by JS so there's no fetch-on-hover latency. */
+.activity-preview {
+  display: none;
+  padding: 0 14px 10px 14px;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+.activity-row:hover .activity-preview { display: block; }
+.activity-preview-body {
+  margin: 0 0 6px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  max-height: 80px;
+  overflow: hidden;
+  position: relative;
+}
+.activity-preview-body.is-truncated::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 20px;
+  background: linear-gradient(transparent, var(--bg-elev));
+  pointer-events: none;
+}
+.activity-preview-empty {
+  font-style: italic;
+  color: var(--text-fade, #9ca3af);
+  margin: 0 0 6px 0;
+}
+.activity-preview-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.activity-preview-facts .fact-key {
+  color: var(--text-fade, #9ca3af);
+}
+.activity-preview-facts .fact-val {
+  color: var(--text);
+}
+/* Epic grouping. A group = full-width tinted epic header + its member
+   rows indented beneath it with a drawn tree connector. */
+:root {
+  --epic-tint: rgba(37, 99, 235, 0.08);
+  --epic-tint-hover: rgba(37, 99, 235, 0.14);
+  --epic-rail: rgba(37, 99, 235, 0.55);
+  --tree-line: rgba(127, 127, 127, 0.45);
+}
+[data-theme="dark"] {
+  --epic-tint: rgba(96, 165, 250, 0.13);
+  --epic-tint-hover: rgba(96, 165, 250, 0.2);
+  --epic-rail: rgba(96, 165, 250, 0.7);
+  --tree-line: rgba(160, 160, 160, 0.45);
+}
+.activity-group {
+  flex: 0 0 auto;              /* never let the flex column squeeze a group */
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--border);
+}
+.activity-group + .activity-group { margin-top: 10px; }
+.activity-group-main {
+  display: grid;
+  /* caret · type pill · id · title · meta */
+  grid-template-columns: auto auto auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px 9px 10px;
+  background: var(--epic-tint);
+  border-left: 3px solid var(--epic-rail);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.activity-group-main:hover { background: var(--epic-tint-hover); }
+.activity-group-main:hover + .activity-preview {
+  display: block;
+  background: var(--epic-tint);
+  padding-left: 36px;
+}
+.activity-group.is-no-epic .activity-group-main {
+  /* caret · "no epic" pill · title · meta */
+  grid-template-columns: auto auto 1fr auto;
+  background: var(--bg-elev);
+  border-left-color: var(--text-fade, #9ca3af);
+  border-left-style: dashed;
+}
+.activity-group.is-no-epic .activity-group-main:hover { background: var(--bg); }
+.activity-caret {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 2px;
+  margin: 0;
+  display: inline-flex;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: transform 100ms ease;
+}
+.activity-caret:hover { color: var(--text); }
+.activity-group.is-collapsed .activity-caret { transform: rotate(-90deg); }
+.activity-group-title { font-weight: 600; font-size: 12.5px; }
+.activity-group.is-no-epic .activity-group-title {
+  color: var(--text-muted);
+  font-style: italic;
+}
+.activity-no-epic-pill {
+  border: 1px dashed var(--text-fade, #9ca3af);
+  background: transparent;
+}
+.activity-count {
+  color: var(--text-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.activity-group-body { display: flex; flex-direction: column; }
+.activity-group.is-collapsed .activity-group-body { display: none; }
+.activity-group-body .activity-row { flex: 0 0 auto; }
+.activity-group-body .activity-row:last-child { border-bottom: 0; }
+
+/* Member rows: a tree connector drawn with two pseudo-elements —
+   ::before is the vertical line (full height, or top-half on the last
+   sibling so it ends in a └), ::after is the horizontal tick to the row.
+   The line sits 22px in from the left, +20px per nesting depth. */
+.activity-row { cursor: pointer; }
+.activity-row .activity-row-main {
+  position: relative;
+  padding-left: calc(38px + var(--depth, 0) * 20px);
+}
+.activity-row .activity-row-main::before {
+  content: '';
+  position: absolute;
+  left: calc(22px + var(--depth, 0) * 20px);
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--tree-line);
+}
+.activity-row.is-last .activity-row-main::before { bottom: 50%; }
+.activity-row .activity-row-main::after {
+  content: '';
+  position: absolute;
+  left: calc(22px + var(--depth, 0) * 20px);
+  top: 50%;
+  width: 10px;
+  border-top: 1px solid var(--tree-line);
+}
+.activity-lead {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.activity-type {
+  font-size: 10px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+.activity-row.is-context .activity-title-cell,
+.activity-title-cell.is-context { color: var(--text-fade, #9ca3af); }
+.activity-empty.is-inline {
+  padding: 4px 14px 8px 38px;
+  text-align: left;
+}
+/* Open is always visible in this view (it's the explicit way into the
+   editor); hover just makes it stronger. */
+.activity-open-btn { opacity: 0.7; }
+.activity-group-main .activity-open-btn,
+.activity-row:hover .activity-open-btn,
+.activity-open-btn:focus-visible { opacity: 1; }
+.board-scroll {
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 8px;
+}
+.board {
+  display: flex;
+  gap: 8px;
+  height: 100%;
+  min-width: min-content;
+}
+
+.col {
+  flex: 0 0 260px;
+  min-width: 220px;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.col.is-collapsed { flex-basis: 180px; }
+.col.is-collapsed .col-body { display: none; }
+.col.col-drag-over {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev));
+}
+
+/* Column-top color stripe: quick visual status cue */
+.col::before {
+  content: "";
+  display: block;
+  height: 2px;
+  flex: 0 0 auto;
+  background: var(--col-color, var(--text-fade));
+}
+.col-open       { --col-color: var(--col-open); }
+.col-in_progress{ --col-color: var(--col-inprogress); }
+.col-blocked    { --col-color: var(--col-blocked); }
+.col-closed     { --col-color: var(--col-closed); }
+
+.col-hdr {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+.col-hdr:hover { color: var(--text); }
+.col-caret {
+  transition: transform 150ms ease;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+.col.is-collapsed .col-caret { transform: rotate(-90deg); }
+.col-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.col-count {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--border);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+
+.col-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.col-empty {
+  padding: 10px 6px;
+  color: var(--text-fade);
+  font-size: 11px;
+  text-align: center;
+  font-style: italic;
+}
+
+/* ─── Card ─────────────────────────────────────────────────────────── */
+.card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 6px 8px;
+  box-shadow: var(--shadow);
+  cursor: grab;
+  transition: border-color 100ms ease, transform 80ms ease, opacity 100ms ease;
+}
+.card:hover { border-color: var(--border-strong); }
+.card:active { cursor: grabbing; }
+.card.card-dragging { opacity: 0.5; }
+.card.selected { border-color: var(--accent); }
+
+.card-hdr {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+.card-type {
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+.card-id {
+  font: 10px/1 ui-monospace, "SF Mono", Menlo, monospace;
+  color: var(--text-muted);
+  text-decoration: none;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--border);
+}
+.card-id:hover { background: var(--border-strong); color: var(--text); }
+
+.card-title {
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--text);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+  align-items: center;
+  font-size: 10px;
+}
+.meta-assignee {
+  color: var(--text-muted);
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}
+.meta-more {
+  color: var(--text-fade);
+  font-size: 10px;
+}
+
+.pill {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.pill-label {
+  background: transparent;
+  border: 1px solid currentColor;
+  font-weight: 500;
+  font-size: 10px;
+  padding: 0 5px;
+  text-transform: lowercase;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* source_repo chip — surfaces cross-repo imports. Muted styling so it
+   doesn't compete with priority / labels for attention. Ayu-neutral. */
+.pill-source-repo {
+  background: var(--panel-2, rgba(127,127,127,0.12));
+  color: var(--text-muted, #888);
+  font-weight: 500;
+  font-size: 9px;
+  padding: 0 6px;
+  border: 1px solid rgba(127,127,127,0.25);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* ─── Toast (optimistic-update notice) ─────────────────────────────── */
+.toast {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  max-width: 300px;
+  padding: 8px 12px;
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.3;
+  box-shadow: var(--shadow);
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease;
+  z-index: 10;
+}
+.toast.toast-visible { opacity: 1; transform: translateY(0); }
+
+/* ─── Bead detail modal ────────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 20px 12px;
+  z-index: 50;
+  animation: modal-fade 120ms ease;
+}
+@keyframes modal-fade { from { opacity: 0; } to { opacity: 1; } }
+
+.modal-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.35);
+  max-width: 560px;
+  width: 100%;
+  max-height: calc(100vh - 40px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-hdr {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.modal-type { font-size: 14px; }
+.modal-id {
+  font: 11px/1 ui-monospace, "SF Mono", Menlo, monospace;
+  color: var(--text-muted);
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: var(--border);
+  flex: 0 0 auto;
+}
+.modal-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 6px;
+  border-radius: 3px;
+}
+.modal-close:hover { color: var(--text); background: var(--border); }
+
+.modal-title {
+  margin: 0;
+  padding: 10px 12px 6px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text);
+}
+
+.modal-pills {
+  padding: 4px 12px 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.modal-labels {
+  padding: 0 12px 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.pill-type {
+  background: var(--border);
+  color: var(--text-muted);
+}
+.pill-assignee {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-strong);
+}
+
+.modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 12px 12px;
+}
+.modal-desc {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  max-height: 220px;
+  overflow-y: auto;
+}
+.modal-missing {
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 18px 4px;
+  text-align: center;
+}
+
+.modal-deps { margin-bottom: 10px; }
+.modal-deps h4 {
+  margin: 8px 0 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.dep-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.dep-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 10px;
+  text-decoration: none;
+  color: var(--text);
+  transition: border-color 120ms ease;
+}
+.dep-chip:hover { border-color: var(--accent); }
+.dep-id {
+  font: 10px/1 ui-monospace, "SF Mono", Menlo, monospace;
+  color: var(--text-muted);
+}
+.dep-status {
+  padding: 1px 5px;
+  border-radius: 2px;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.modal-ts {
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  display: grid;
+  grid-template-columns: 70px 1fr;
+  gap: 2px 8px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.modal-ts .ts-row { display: contents; }
+.modal-ts .ts-k { text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+.modal-ts .ts-v { color: var(--text); }
+
+/* ─── Scrollbars (match native-ish Apple look) ─────────────────────── */
+/* Only the Kanban Board surfaces get the slim 8px custom thumb. The
+   Activity / Dashboard / Insights / Issues views keep WebKit's default
+   native scrollbar (color-scheme above makes it render dark on dark);
+   matches the visual width users see in the index.html main views. */
+.col-body::-webkit-scrollbar,
+.board-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.col-body::-webkit-scrollbar-thumb,
+.board-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+.col-body::-webkit-scrollbar-thumb:hover,
+.board-scroll::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+.col-body::-webkit-scrollbar-track,
+.board-scroll::-webkit-scrollbar-track { background: transparent; }
