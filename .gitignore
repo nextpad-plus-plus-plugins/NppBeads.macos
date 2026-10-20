@@ -5,6 +5,7 @@ downloads/
 *.dylib
 tmp/
 docs/
+resources/
 .npp-md-preview.html
 
 # Release zips (also attached to GitHub releases)
