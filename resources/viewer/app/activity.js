@@ -21,9 +21,179 @@
 
   const listEl = document.getElementById('activity-list');
   const sumEl  = document.getElementById('activity-summary');
+  const ctrlEl = document.getElementById('activity-controls');
 
   const NO_EPIC = '__no_epic__';
   const ROW_CAP = 200;   // render cap — agents can create 10k+ beads
+
+  // ── View-local facet filters + expand/collapse-all ──────────────────
+  // These live only in this view (the search box drives App.filter.query
+  // separately). A bead must pass ALL active facets AND the search query
+  // to be shown. An empty facet set means "all".
+  const typeFilter   = new Set();
+  const prioFilter   = new Set();
+  const statusFilter = new Set();
+
+  const TYPE_ORDER   = ['epic', 'feature', 'task', 'bug', 'chore', 'decision'];
+  const STATUS_ORDER = ['open', 'in_progress', 'blocked', 'deferred', 'closed'];
+  const PRIO_ORDER   = ['0', '1', '2', '3', '4'];
+
+  let expandAllBox = null;   // the master expand/collapse checkbox
+  let shownGroups  = [];     // {id, collapsed} for each group in the last render
+
+  function filtersActive() {
+    const q = (App.filter && App.filter.query) ? App.filter.query : '';
+    return !!q || typeFilter.size > 0 || prioFilter.size > 0 || statusFilter.size > 0;
+  }
+  function passesFacets(b) {
+    if (typeFilter.size && !typeFilter.has(b.type || 'task')) return false;
+    if (prioFilter.size && (b.priority == null || !prioFilter.has(String(b.priority)))) return false;
+    if (statusFilter.size && !statusFilter.has(b.status || '')) return false;
+    return true;
+  }
+
+  // Distinct facet values actually present in the data, in canonical
+  // order (unknown values appended alphabetically) — so each menu lists
+  // exactly the types/priorities/statuses this project uses.
+  function presentValues(kind) {
+    const present = new Set();
+    for (const b of (App.beads || [])) {
+      if (kind === 'types')      present.add(b.type || 'task');
+      else if (kind === 'prios') { if (b.priority != null) present.add(String(b.priority)); }
+      else if (kind === 'stats') { if (b.status) present.add(b.status); }
+    }
+    const order = kind === 'types' ? TYPE_ORDER : kind === 'prios' ? PRIO_ORDER : STATUS_ORDER;
+    const inOrder = order.filter(v => present.has(v));
+    const extras  = [...present].filter(v => order.indexOf(v) === -1).sort();
+    return inOrder.concat(extras);
+  }
+
+  function closeAllMenus() {
+    if (!ctrlEl) return;
+    for (const m of ctrlEl.querySelectorAll('.filter-menu')) m.hidden = true;
+    for (const f of ctrlEl.querySelectorAll('.filter.is-open')) f.classList.remove('is-open');
+  }
+
+  // One facet dropdown: a button + a checkbox menu populated on open
+  // (so it reflects the current data and filter state each time).
+  function buildFilter(name, set, kind, labelFn) {
+    const wrap = document.createElement('div');
+    wrap.className = 'filter';
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'filter-btn';
+    function syncBtn() {
+      btn.textContent = name + (set.size ? ' (' + set.size + ')' : '') + ' ▾';
+      btn.classList.toggle('is-active', set.size > 0);
+    }
+    syncBtn();
+
+    const menu = document.createElement('div');
+    menu.className = 'filter-menu';
+    menu.hidden = true;
+    menu.addEventListener('click', (e) => e.stopPropagation());
+
+    function populate() {
+      menu.innerHTML = '';
+      const allRow = document.createElement('label');
+      allRow.className = 'filter-opt filter-all';
+      const allCb = document.createElement('input');
+      allCb.type = 'checkbox';
+      allCb.checked = set.size === 0;
+      allCb.addEventListener('change', () => {
+        set.clear();
+        syncBtn();
+        populate();
+        render();
+      });
+      allRow.appendChild(allCb);
+      allRow.appendChild(document.createTextNode('All'));
+      menu.appendChild(allRow);
+
+      for (const v of presentValues(kind)) {
+        const row = document.createElement('label');
+        row.className = 'filter-opt';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = set.has(v);
+        cb.addEventListener('change', () => {
+          if (cb.checked) set.add(v); else set.delete(v);
+          allCb.checked = set.size === 0;
+          syncBtn();
+          render();
+        });
+        const lab = document.createElement('span');
+        lab.className = 'filter-opt-label';
+        lab.textContent = labelFn(v);
+        row.appendChild(cb);
+        row.appendChild(lab);
+        menu.appendChild(row);
+      }
+    }
+
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const willOpen = menu.hidden;
+      closeAllMenus();
+      if (willOpen) { populate(); menu.hidden = false; wrap.classList.add('is-open'); }
+    });
+
+    wrap.appendChild(btn);
+    wrap.appendChild(menu);
+    return wrap;
+  }
+
+  function onExpandAll() {
+    const expand = expandAllBox.checked;
+    for (const g of shownGroups) toggles[g.id] = !expand;
+    saveToggles(toggles);
+    render();
+  }
+
+  function syncExpandBox() {
+    if (!expandAllBox) return;
+    if (!shownGroups.length) {
+      expandAllBox.checked = false;
+      expandAllBox.indeterminate = false;
+      expandAllBox.disabled = true;
+      return;
+    }
+    expandAllBox.disabled = false;
+    let anyCollapsed = false, anyExpanded = false;
+    for (const g of shownGroups) {
+      if (g.collapsed) anyCollapsed = true; else anyExpanded = true;
+    }
+    expandAllBox.checked = !anyCollapsed;                 // all expanded
+    expandAllBox.indeterminate = anyCollapsed && anyExpanded;
+  }
+
+  function buildControls() {
+    if (!ctrlEl) return;
+    ctrlEl.innerHTML = '';
+
+    const expandLbl = document.createElement('label');
+    expandLbl.className = 'activity-expand';
+    expandLbl.title = 'Expand or collapse every epic';
+    expandAllBox = document.createElement('input');
+    expandAllBox.type = 'checkbox';
+    expandAllBox.addEventListener('change', onExpandAll);
+    expandLbl.appendChild(expandAllBox);
+    expandLbl.appendChild(document.createTextNode('Expand all'));
+    ctrlEl.appendChild(expandLbl);
+
+    ctrlEl.appendChild(buildFilter('Type',     typeFilter,   'types',
+      (v) => App.typeIcon(v) + ' ' + v));
+    ctrlEl.appendChild(buildFilter('Priority', prioFilter,   'prios',
+      (v) => 'P' + v));
+    ctrlEl.appendChild(buildFilter('Status',   statusFilter, 'stats',
+      (v) => App.statusColor(v).label));
+
+    // Click anywhere outside an open filter closes it.
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.filter')) closeAllMenus();
+    });
+  }
 
   // ── Collapse state ──────────────────────────────────────────────────
   // Explicit user toggles persist per group id. Groups without a stored
@@ -132,13 +302,17 @@
     if (beads.length === 0) {
       listEl.appendChild(emptyNote('No issues in this project yet.'));
       sumEl.textContent = '';
+      shownGroups = [];
+      syncExpandBox();
       return;
     }
 
     const q = (App.filter && App.filter.query) ? App.filter.query : '';
-    const matches = (b) => !q || App.matchesQuery(b, q);
+    const active = filtersActive();
+    const matches = (b) => (!q || App.matchesQuery(b, q)) && passesFacets(b);
     const { groups, parentOf } = buildGroups(beads);
 
+    const shown = [];
     let rows = 0, shownIssues = 0, capped = false;
     let epicCount = 0, noEpicCount = 0;
 
@@ -161,15 +335,16 @@
       }
       const anyChild = computeVisible('');
       const epicMatches = g.epic ? matches(g.epic) : false;
-      if (q && !anyChild && !epicMatches) continue;
+      if (active && !anyChild && !epicMatches) continue;
       if (!g.epic && !g.members.length) continue;
 
       const collapsed = isCollapsed(g.id, g.epic);
       if (rows >= ROW_CAP) { capped = true; break; }
-      const groupEl = buildGroup(g, collapsed, epicMatches, q);
+      const groupEl = buildGroup(g, collapsed, epicMatches, active);
       listEl.appendChild(groupEl);
+      shown.push({ id: g.id, collapsed });
       rows++;
-      if (g.epic && (epicMatches || !q)) shownIssues++;
+      if (g.epic && (epicMatches || !active)) shownIssues++;
       if (collapsed) continue;
 
       // Depth-first emit of visible rows into the group body. Each row
@@ -193,9 +368,9 @@
         push(b.id, depth + 1);
       }
       if (capped) break;
-      if (q && epicMatches && !anyChild && g.members.length) {
+      if (active && epicMatches && !anyChild && g.members.length) {
         body.appendChild(emptyNote(g.members.length + ' item' +
-          (g.members.length === 1 ? '' : 's') + ' hidden by search', 1));
+          (g.members.length === 1 ? '' : 's') + ' hidden by filters', 1));
       }
     }
 
@@ -203,15 +378,18 @@
       listEl.appendChild(emptyNote('… list capped at ' + ROW_CAP +
         ' rows (use search to narrow)'));
     }
-    if (rows === 0 && q) {
-      listEl.appendChild(emptyNote('No issues match the current search.'));
+    if (rows === 0 && active) {
+      listEl.appendChild(emptyNote('No issues match the current filters.'));
     }
+
+    shownGroups = shown;
+    syncExpandBox();
 
     const total = beads.length;
     let summary = total + ' issue' + (total === 1 ? '' : 's') +
       ' · ' + epicCount + ' epic' + (epicCount === 1 ? '' : 's') +
       ' · ' + noEpicCount + ' not in any epic';
-    if (q) summary += ' · ' + shownIssues + ' match';
+    if (active) summary += ' · ' + shownIssues + ' match';
     sumEl.textContent = summary;
   }
 
@@ -267,7 +445,7 @@
   // holding the member rows as an indented tree. Caret toggles the
   // body; clicking anywhere else on an epic header (or its Open button)
   // opens the epic in the edit modal, same as any other row.
-  function buildGroup(g, collapsed, epicMatches, q) {
+  function buildGroup(g, collapsed, epicMatches, active) {
     const row = document.createElement('div');
     row.className = 'activity-group' + (g.epic ? '' : ' is-no-epic') +
                     (collapsed ? ' is-collapsed' : '');
@@ -303,7 +481,7 @@
       titleEl.className = 'activity-title-cell activity-group-title';
       titleEl.textContent = g.epic.title || '(no title)';
       titleEl.title = g.epic.title || '';
-      if (q && !epicMatches) titleEl.classList.add('is-context');
+      if (active && !epicMatches) titleEl.classList.add('is-context');
       main.appendChild(titleEl);
     } else {
       const badge = document.createElement('span');
@@ -496,6 +674,8 @@
     wrap.appendChild(facts);
     return wrap;
   }
+
+  buildControls();
 
   App.onDataLoaded = render;
   App.onRefresh    = render;
