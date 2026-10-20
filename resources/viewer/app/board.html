@@ -99,7 +99,7 @@
   </template>
   <!-- Shared autocomplete pool for all chip-inputs that take a bead id
        (new-issue modal + detail-modal dep editor). Populated on modal
-       open by refreshDepSuggestions() in board.js. -->
+       open by refreshDepSuggestions() in detail.js. -->
   <datalist id="dep-suggest"></datalist>
   <div id="board-scroll" class="board-scroll">
     <div id="board" class="board"></div>
@@ -133,6 +133,7 @@
   <script src="../vendor/marked.min.js"></script>
   <script src="../vendor/dompurify.min.js"></script>
   <script src="app.js"></script>
+  <script src="detail.js"></script>
   <script src="board.js"></script>
 </body>
 </html>

@@ -12,8 +12,16 @@
     <span id="activity-summary" class="activity-summary"></span>
   </div>
   <div id="activity-list" class="activity-list"></div>
+  <!-- Shared autocomplete pool for the detail-modal dep editor
+       (populated by refreshDepSuggestions() in detail.js). -->
+  <datalist id="dep-suggest"></datalist>
   <script src="../bridge.js"></script>
+  <!-- Markdown rendering for the shared detail modal (comments +
+       description preview). Vendored UMD globals: marked, DOMPurify. -->
+  <script src="../vendor/marked.min.js"></script>
+  <script src="../vendor/dompurify.min.js"></script>
   <script src="app.js"></script>
+  <script src="detail.js"></script>
   <script src="activity.js"></script>
 </body>
 </html>

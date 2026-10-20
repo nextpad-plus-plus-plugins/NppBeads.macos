@@ -1,14 +1,18 @@
-// Beads Activity view — Phase 6.
+// Beads Activity view — Phase 6, restructured.
 //
-// Flat scrollable list of issues sorted by updated_at DESC. Each row
-// stays compact by default; hovering expands an inline preview with
-// description + extra metadata (labels / dep counts / type). A
-// dedicated "Open" button (visible on hover) is the ONLY click path
-// into the Board detail modal — row body / title / id are not clickable.
+// Issues grouped by Epic. Each group is an epic header row (collapsible)
+// followed by the epic's descendants as an indented tree (parent-child
+// deps). Issues with no epic anywhere up their parent chain land in a
+// distinct "Not in any epic" group. Groups and rows are ordered by most
+// recent activity (updated_at DESC) so the view still reads as "what
+// moved lately". Every row shows the issue type.
 //
-// Data source: window.__nppApp.beads (parsed from JSONL). We don't
-// fetch per-issue records here — the panel's Board-side detail modal
-// does its own fetchBead on open.
+// Clicking a row (or its Open button) opens the shared view/edit modal
+// from detail.js right here — no hop to the Board view. Hovering a row
+// still expands the inline preview (description + facts).
+//
+// Data source: window.__nppApp.beads (parsed from JSONL). The modal does
+// its own fetchBead for comments.
 
 (function () {
   'use strict';
@@ -18,56 +22,366 @@
   const listEl = document.getElementById('activity-list');
   const sumEl  = document.getElementById('activity-summary');
 
+  const NO_EPIC = '__no_epic__';
+  const ROW_CAP = 200;   // render cap — agents can create 10k+ beads
+
+  // ── Collapse state ──────────────────────────────────────────────────
+  // Explicit user toggles persist per group id. Groups without a stored
+  // choice default to collapsed when the epic is closed, expanded
+  // otherwise.
+  const COLLAPSED_KEY = 'nppbeads.activity.collapsed.v2';
+  function loadToggles() {
+    try {
+      const raw = localStorage.getItem(COLLAPSED_KEY);
+      const obj = raw ? JSON.parse(raw) : null;
+      return (obj && typeof obj === 'object') ? obj : {};
+    } catch { return {}; }
+  }
+  function saveToggles(t) {
+    try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify(t)); } catch {}
+  }
+  const toggles = loadToggles();
+  function isCollapsed(groupId, epic) {
+    if (Object.prototype.hasOwnProperty.call(toggles, groupId)) return !!toggles[groupId];
+    return !!(epic && epic.status === 'closed');
+  }
+
+  // ── Hierarchy ───────────────────────────────────────────────────────
+  function recency(b) { return String(b.updatedAt || b.createdAt || ''); }
+  function byRecency(a, b) { return recency(b).localeCompare(recency(a)); }
+
+  // parent-child deps: {issue_id: child, depends_on_id: parent}. bd may
+  // embed the edge on either side's record, so read both directions.
+  function buildParentMap(beads, byId) {
+    const parentOf = new Map();
+    for (const b of beads) {
+      for (const d of (b.deps || [])) {
+        if (!d) continue;
+        const kind = d.dependency_type || d.type || 'blocks';
+        if (kind !== 'parent-child') continue;
+        const child = d.issue_id, parent = d.depends_on_id;
+        if (!child || !parent || child === parent) continue;
+        if (!byId.has(child) || !byId.has(parent)) continue;
+        if (!parentOf.has(child)) parentOf.set(child, parent);
+      }
+    }
+    return parentOf;
+  }
+
+  // Top-most epic in the ancestor chain (cycle-safe), or null.
+  function groupEpicFor(id, parentOf, byId) {
+    let top = null;
+    const seen = new Set([id]);
+    let cur = parentOf.get(id);
+    while (cur && !seen.has(cur)) {
+      seen.add(cur);
+      const b = byId.get(cur);
+      if (b && b.type === 'epic') top = cur;
+      cur = parentOf.get(cur);
+    }
+    return top;
+  }
+
+  // Returns [{ id, epic|null, members: [beads], latest }] sorted by recency.
+  function buildGroups(beads) {
+    const byId = new Map(beads.map(b => [b.id, b]));
+    const parentOf = buildParentMap(beads, byId);
+    const groups = new Map();
+    function group(key, epic) {
+      let g = groups.get(key);
+      if (!g) { g = { id: key, epic, members: [], latest: '' }; groups.set(key, g); }
+      return g;
+    }
+    for (const b of beads) {
+      let key, epic = null;
+      if (b.type === 'epic' && !groupEpicFor(b.id, parentOf, byId)) {
+        key = b.id; epic = b;              // top-level epic = its own group
+      } else {
+        const top = groupEpicFor(b.id, parentOf, byId);
+        if (top) { key = top; epic = byId.get(top); }
+        else      { key = NO_EPIC; }
+      }
+      const g = group(key, epic);
+      if (epic !== b) g.members.push(b);
+      if (recency(b) > g.latest) g.latest = recency(b);
+    }
+    const out = [...groups.values()];
+    out.sort((a, b) => b.latest.localeCompare(a.latest));
+    return { groups: out, parentOf, byId };
+  }
+
+  // Tree of a group's members: a member nests under its parent when the
+  // parent is also a member of the same group, else at the group root.
+  function buildTree(g, parentOf) {
+    const memberIds = new Set(g.members.map(b => b.id));
+    const children = new Map();   // parent id (or '') → [beads]
+    for (const b of g.members) {
+      const p = parentOf.get(b.id);
+      const key = (p && memberIds.has(p)) ? p : '';
+      if (!children.has(key)) children.set(key, []);
+      children.get(key).push(b);
+    }
+    for (const arr of children.values()) arr.sort(byRecency);
+    return children;
+  }
+
+  // ── Render ──────────────────────────────────────────────────────────
   function render() {
     listEl.innerHTML = '';
-    const beads = (App.beads || []).slice().sort((a, b) => {
-      const tA = a.updatedAt || a.createdAt || '';
-      const tB = b.updatedAt || b.createdAt || '';
-      return String(tB).localeCompare(String(tA));
-    });
-
+    const beads = (App.beads || []).slice();
     if (beads.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'activity-empty';
-      empty.textContent = 'No issues in this project yet.';
-      listEl.appendChild(empty);
+      listEl.appendChild(emptyNote('No issues in this project yet.'));
       sumEl.textContent = '';
       return;
     }
 
     const q = (App.filter && App.filter.query) ? App.filter.query : '';
-    let shown = 0;
-    const cap = 200;   // render cap — agents can create 10k+ beads
-    for (const b of beads) {
-      if (q && !App.matchesQuery(b, q)) continue;
-      if (shown >= cap) break;
-      listEl.appendChild(buildRow(b));
-      shown++;
+    const matches = (b) => !q || App.matchesQuery(b, q);
+    const { groups, parentOf } = buildGroups(beads);
+
+    let rows = 0, shownIssues = 0, capped = false;
+    let epicCount = 0, noEpicCount = 0;
+
+    for (const g of groups) {
+      if (g.epic) epicCount++; else noEpicCount = g.members.length;
+      const children = buildTree(g, parentOf);
+
+      // Visibility under search: a node is visible when it matches or
+      // any descendant does. Precompute per node.
+      const visible = new Map();
+      function computeVisible(parentKey) {
+        let any = false;
+        for (const b of (children.get(parentKey) || [])) {
+          const self = matches(b);
+          const sub = computeVisible(b.id);
+          visible.set(b.id, self || sub);
+          if (self || sub) any = true;
+        }
+        return any;
+      }
+      const anyChild = computeVisible('');
+      const epicMatches = g.epic ? matches(g.epic) : false;
+      if (q && !anyChild && !epicMatches) continue;
+      if (!g.epic && !g.members.length) continue;
+
+      const collapsed = isCollapsed(g.id, g.epic);
+      if (rows >= ROW_CAP) { capped = true; break; }
+      const groupEl = buildGroup(g, collapsed, epicMatches, q);
+      listEl.appendChild(groupEl);
+      rows++;
+      if (g.epic && (epicMatches || !q)) shownIssues++;
+      if (collapsed) continue;
+
+      // Depth-first emit of visible rows into the group body. Each row
+      // knows whether it is the last visible sibling so the tree
+      // connector can draw └ instead of ├.
+      const body = groupEl.querySelector('.activity-group-body');
+      const stack = [];
+      const push = (parentKey, depth) => {
+        const arr = (children.get(parentKey) || []).filter(b => visible.get(b.id));
+        for (let i = arr.length - 1; i >= 0; i--) {
+          stack.push({ b: arr[i], depth, last: i === arr.length - 1 });
+        }
+      };
+      push('', 0);
+      while (stack.length) {
+        const { b, depth, last } = stack.pop();
+        if (rows >= ROW_CAP) { capped = true; break; }
+        body.appendChild(buildRow(b, depth, last, parentOf, matches(b)));
+        rows++;
+        if (matches(b)) shownIssues++;
+        push(b.id, depth + 1);
+      }
+      if (capped) break;
+      if (q && epicMatches && !anyChild && g.members.length) {
+        body.appendChild(emptyNote(g.members.length + ' item' +
+          (g.members.length === 1 ? '' : 's') + ' hidden by search', 1));
+      }
     }
-    sumEl.textContent = (shown === beads.length)
-      ? (shown + ' issue' + (shown === 1 ? '' : 's'))
-      : (shown + ' of ' + beads.length + ' shown');
-    if (shown === 0 && q) {
-      const none = document.createElement('div');
-      none.className = 'activity-empty';
-      none.textContent = 'No issues match the current search.';
-      listEl.appendChild(none);
+
+    if (capped) {
+      listEl.appendChild(emptyNote('… list capped at ' + ROW_CAP +
+        ' rows (use search to narrow)'));
     }
+    if (rows === 0 && q) {
+      listEl.appendChild(emptyNote('No issues match the current search.'));
+    }
+
+    const total = beads.length;
+    let summary = total + ' issue' + (total === 1 ? '' : 's') +
+      ' · ' + epicCount + ' epic' + (epicCount === 1 ? '' : 's') +
+      ' · ' + noEpicCount + ' not in any epic';
+    if (q) summary += ' · ' + shownIssues + ' match';
+    sumEl.textContent = summary;
   }
 
-  function buildRow(b) {
+  function emptyNote(text, indent) {
+    const n = document.createElement('div');
+    n.className = 'activity-empty';
+    if (indent) n.classList.add('is-inline');
+    n.textContent = text;
+    return n;
+  }
+
+  function typePill(type) {
+    const t = document.createElement('span');
+    t.className = 'pill pill-type activity-type';
+    t.textContent = App.typeIcon(type) + ' ' + (type || 'task');
+    t.title = 'type: ' + (type || 'task');
+    return t;
+  }
+
+  function statusPill(b) {
+    const s = App.statusColor(b.status);
+    const status = document.createElement('span');
+    status.className = 'pill';
+    status.style.background = s.bg;
+    status.style.color      = s.fg;
+    status.textContent = s.label;
+    return status;
+  }
+
+  function openButton(id) {
+    const openBtn = document.createElement('button');
+    openBtn.type = 'button';
+    openBtn.className = 'activity-open-btn';
+    openBtn.textContent = 'Open';
+    openBtn.title = 'View / edit ' + id;
+    openBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      App.openBeadModal(id);
+    });
+    return openBtn;
+  }
+
+  // Row click → modal, unless the click hit a control or the user was
+  // selecting text (ids are selectable for copying).
+  function onRowClick(id, e) {
+    if (e.target.closest('button, a, input, select, textarea')) return;
+    const sel = window.getSelection && window.getSelection();
+    if (sel && String(sel).length) return;
+    App.openBeadModal(id);
+  }
+
+  // Group = header row (the epic, or the "no epic" bucket) + a body
+  // holding the member rows as an indented tree. Caret toggles the
+  // body; clicking anywhere else on an epic header (or its Open button)
+  // opens the epic in the edit modal, same as any other row.
+  function buildGroup(g, collapsed, epicMatches, q) {
+    const row = document.createElement('div');
+    row.className = 'activity-group' + (g.epic ? '' : ' is-no-epic') +
+                    (collapsed ? ' is-collapsed' : '');
+    if (g.epic) row.dataset.beadId = g.epic.id;
+
+    const main = document.createElement('div');
+    main.className = 'activity-group-main';
+
+    const caret = document.createElement('button');
+    caret.type = 'button';
+    caret.className = 'activity-caret';
+    caret.title = collapsed ? 'Expand' : 'Collapse';
+    caret.setAttribute('aria-label', caret.title);
+    caret.innerHTML = '<svg width="10" height="10" viewBox="0 0 10 10">' +
+      '<path d="M2 3 L5 7 L8 3" fill="none" stroke="currentColor" ' +
+      'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    caret.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggles[g.id] = !collapsed;
+      saveToggles(toggles);
+      render();
+    });
+    main.appendChild(caret);
+
+    if (g.epic) {
+      main.appendChild(typePill('epic'));
+      const idEl = document.createElement('span');
+      idEl.className = 'activity-id';
+      idEl.textContent = g.epic.id;
+      idEl.title = g.epic.id;
+      main.appendChild(idEl);
+      const titleEl = document.createElement('div');
+      titleEl.className = 'activity-title-cell activity-group-title';
+      titleEl.textContent = g.epic.title || '(no title)';
+      titleEl.title = g.epic.title || '';
+      if (q && !epicMatches) titleEl.classList.add('is-context');
+      main.appendChild(titleEl);
+    } else {
+      const badge = document.createElement('span');
+      badge.className = 'pill pill-type activity-type activity-no-epic-pill';
+      badge.textContent = '⊘ no epic';
+      main.appendChild(badge);
+      const titleEl = document.createElement('div');
+      titleEl.className = 'activity-title-cell activity-group-title';
+      titleEl.textContent = 'Not in any epic';
+      main.appendChild(titleEl);
+    }
+
+    const metaEl = document.createElement('div');
+    metaEl.className = 'activity-meta';
+    const count = document.createElement('span');
+    count.className = 'activity-count';
+    count.textContent = g.members.length + ' item' + (g.members.length === 1 ? '' : 's');
+    metaEl.appendChild(count);
+    if (g.epic) {
+      metaEl.appendChild(statusPill(g.epic));
+      const p = App.priorityBadge(g.epic.priority);
+      if (p) {
+        const pEl = document.createElement('span');
+        pEl.className = 'pill';
+        pEl.style.background = p.color;
+        pEl.style.color = '#fff';
+        pEl.textContent = p.label;
+        metaEl.appendChild(pEl);
+      }
+    }
+    const when = document.createElement('span');
+    when.className = 'activity-time';
+    when.textContent = App.fmtTime(g.latest);
+    when.title = g.latest;
+    metaEl.appendChild(when);
+    if (g.epic) metaEl.appendChild(openButton(g.epic.id));
+    main.appendChild(metaEl);
+    row.appendChild(main);
+
+    if (g.epic) {
+      // Epic header behaves like an issue row: click → modal.
+      main.addEventListener('click', (e) => onRowClick(g.epic.id, e));
+      row.appendChild(buildPreview(g.epic, null));
+    } else {
+      main.addEventListener('click', (e) => {
+        if (e.target.closest('button, a')) return;
+        toggles[g.id] = !collapsed;
+        saveToggles(toggles);
+        render();
+      });
+    }
+
+    const body = document.createElement('div');
+    body.className = 'activity-group-body';
+    row.appendChild(body);
+    return row;
+  }
+
+  function buildRow(b, depth, isLast, parentOf, isMatch) {
     const row = document.createElement('div');
     row.className = 'activity-row';
     row.dataset.beadId = b.id;
+    row.style.setProperty('--depth', String(depth));
+    if (!isMatch) row.classList.add('is-context');
+    if (isLast) row.classList.add('is-last');   // tree connector draws └
 
     const main = document.createElement('div');
     main.className = 'activity-row-main';
 
+    const lead = document.createElement('div');
+    lead.className = 'activity-lead';
+    lead.appendChild(typePill(b.type));
     const idEl = document.createElement('span');
     idEl.className = 'activity-id';
     idEl.textContent = b.id;
     idEl.title = b.id;   // tooltip lets user see full id even when narrow
-    main.appendChild(idEl);
+    lead.appendChild(idEl);
+    main.appendChild(lead);
 
     const titleEl = document.createElement('div');
     titleEl.className = 'activity-title-cell';
@@ -77,14 +391,7 @@
 
     const metaEl = document.createElement('div');
     metaEl.className = 'activity-meta';
-
-    const s = App.statusColor(b.status);
-    const status = document.createElement('span');
-    status.className = 'pill';
-    status.style.background = s.bg;
-    status.style.color      = s.fg;
-    status.textContent = s.label;
-    metaEl.appendChild(status);
+    metaEl.appendChild(statusPill(b));
 
     const p = App.priorityBadge(b.priority);
     if (p) {
@@ -109,30 +416,17 @@
     when.title = b.updatedAt || b.createdAt || '';
     metaEl.appendChild(when);
 
-    // Open button — only click path into the Board detail modal. Hidden
-    // by CSS until the row is hovered / focused, so compact rows stay
-    // compact when the user is just scanning.
-    const openBtn = document.createElement('button');
-    openBtn.type = 'button';
-    openBtn.className = 'activity-open-btn';
-    openBtn.textContent = 'Open ↗';
-    openBtn.title = 'Open in Board detail view (' + b.id + ')';
-    openBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      requestOpenInBoard(b.id);
-    });
-    metaEl.appendChild(openBtn);
-
+    metaEl.appendChild(openButton(b.id));
     main.appendChild(metaEl);
     row.appendChild(main);
+    row.addEventListener('click', (e) => onRowClick(b.id, e));
 
     // Hover preview — pre-rendered so there's no lag on first hover.
-    row.appendChild(buildPreview(b));
-
+    row.appendChild(buildPreview(b, parentOf));
     return row;
   }
 
-  function buildPreview(b) {
+  function buildPreview(b, parentOf) {
     const wrap = document.createElement('div');
     wrap.className = 'activity-preview';
 
@@ -157,7 +451,7 @@
       wrap.appendChild(empty);
     }
 
-    // Facts row — quick overview of type, label count, dep counts, etc.
+    // Facts row — quick overview of type, parent, label count, dep counts.
     const facts = document.createElement('div');
     facts.className = 'activity-preview-facts';
 
@@ -176,6 +470,7 @@
     }
 
     addFact('type', b.type || null);
+    if (parentOf && parentOf.has(b.id)) addFact('parent', parentOf.get(b.id));
     if (b.labels && b.labels.length) {
       addFact('labels', b.labels.slice(0, 6).join(', ') +
         (b.labels.length > 6 ? ` (+${b.labels.length - 6})` : ''));
@@ -187,8 +482,11 @@
     const deps = Array.isArray(b.deps) ? b.deps : [];
     let blockedByN = 0, blocksN = 0;
     for (const d of deps) {
-      if (d && d.issue_id === b.id)           blockedByN++;
-      else if (d && d.depends_on_id === b.id) blocksN++;
+      if (!d) continue;
+      const kind = d.dependency_type || d.type || 'blocks';
+      if (kind !== 'blocks') continue;
+      if (d.issue_id === b.id)           blockedByN++;
+      else if (d.depends_on_id === b.id) blocksN++;
     }
     if (blockedByN) addFact('blocked by', blockedByN);
     if (blocksN)    addFact('blocks',     blocksN);
@@ -197,21 +495,6 @@
 
     wrap.appendChild(facts);
     return wrap;
-  }
-
-  // Ask native to open the Board's detail modal for `id`. Fire-and-
-  // forget — no reqId, no Promise. The native handler routes through
-  // showBeadDetail: which switches the view and queues the JS.
-  function requestOpenInBoard(id) {
-    if (!id) return;
-    if (window.webkit && window.webkit.messageHandlers &&
-        window.webkit.messageHandlers.beadsBridge) {
-      try {
-        window.webkit.messageHandlers.beadsBridge.postMessage({
-          type: 'openBeadModal', id,
-        });
-      } catch (e) { console.warn('[Activity] bridge post failed:', e); }
-    }
   }
 
   App.onDataLoaded = render;
