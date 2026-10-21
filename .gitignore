@@ -5,7 +5,10 @@ downloads/
 *.dylib
 tmp/
 docs/
-resources/
+# Keep resources/ out of the repo EXCEPT the bundled web UI (resources/viewer).
+# Icons, Assets.car, toolbar + dmg-background images stay local only.
+resources/*
+!resources/viewer/
 .npp-md-preview.html
 
 # Release zips (also attached to GitHub releases)
