@@ -793,11 +793,13 @@ static NSArray<NSString *> *collectStderrWarnings(NSString *stderrStr) {
         return;
     }
     [self _runOnIoQueue:^{
-        // Route body via stdin → survives newlines, quotes, $, backticks,
-        // and anything else the user might paste. Same pattern as our
-        // create/update paths that take --body-file=-.
-        BdResult *r = [self _execute:@[@"comment", @"add", issueId,
-                                        @"--body-file=-", @"--json"]
+        // bd 1.0.2 CLI: `bd comment <id> --stdin` — the singular `comment`
+        // is itself the add shorthand (there is no `comment add` subcommand),
+        // and the old `--body-file` flag no longer exists on it (that was the
+        // "unknown flag: --body-file" failure). Routing the body via stdin
+        // survives newlines, quotes, $, backticks, and anything else pasted.
+        BdResult *r = [self _execute:@[@"comment", issueId,
+                                        @"--stdin", @"--json"]
                                 stdin:body];
         if (r.ok) [self invalidateCache];
         dispatch_async(dispatch_get_main_queue(), ^{ if (done) done(r); });

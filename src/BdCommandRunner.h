@@ -190,8 +190,9 @@ typedef NS_ENUM(NSInteger, BdErrorKind) {
 - (void)unassignIssue:(NSString *)issueId
            completion:(void (^)(BdResult *res))done;
 
-/** Phase 6 — `bd comment add <id> --body-file=- --json` with the body
-    text piped via stdin so special chars + multi-line markdown survive.
+/** Phase 6 — `bd comment <id> --stdin --json` with the body text piped
+    via stdin so special chars + multi-line markdown survive (bd 1.0.2
+    interface; the old `comment add … --body-file=-` was removed).
     Empty body is rejected client-side (bd would also reject). */
 - (void)addCommentToIssue:(NSString *)issueId
                      body:(NSString *)body
