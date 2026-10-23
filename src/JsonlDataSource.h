@@ -28,8 +28,17 @@ NS_ASSUME_NONNULL_BEGIN
 // lines are logged and skipped. Never returns nil.
 - (NSArray<NSDictionary *> *)issues;
 
-// Force reread on next accessor call.
+// Force reread on next accessor call. No-op while `fedExternally` is set
+// (the adopted text, not the file, is the current truth).
 - (void)reload;
+
+// Data-source priority support: when the panel renders from the Dolt DB
+// (bd export), it feeds the fresh JSONL text here so every consumer
+// (raw preload, counts, "N new" badge) stays on one code path. While
+// `fedExternally` is YES, -reload/-invalidateCache do NOT reread the
+// file — the adopted text wins until the flag is cleared.
+@property (nonatomic, assign) BOOL fedExternally;
+- (void)adoptRawText:(NSString *)text;
 
 // Summary counts for the status bar.
 - (NSUInteger)issueCount;

@@ -891,6 +891,312 @@
     }, 3500);
   }
 
+  // ── New issue modal (shared) ────────────────────────────────────────
+  // Lived in board.js/board.html until 0.9.7; moved here so the Activity
+  // view (and any future view) gets the same entry point. Markup is an
+  // HTML string rather than a <template> so host pages don't each have
+  // to carry a copy.
+  const NEW_ISSUE_HTML = `
+    <div class="modal-overlay" id="new-issue-overlay">
+      <div class="modal-card new-issue-modal" role="dialog" aria-label="New issue">
+        <div class="modal-hdr">
+          <span class="modal-title">New issue</span>
+          <button class="modal-close" type="button" aria-label="Close">×</button>
+        </div>
+        <form class="new-issue-form" novalidate>
+          <label class="field">
+            <span class="field-label">Title <span class="req">*</span></span>
+            <input type="text" name="title" required autocomplete="off"
+                   placeholder="Short summary of the issue">
+          </label>
+          <div class="field-row">
+            <label class="field">
+              <span class="field-label">Type</span>
+              <select name="issueType">
+                <option value="task">task</option>
+                <option value="bug">bug</option>
+                <option value="feature">feature</option>
+                <option value="epic">epic</option>
+                <option value="chore">chore</option>
+                <option value="decision">decision</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">Priority</span>
+              <select name="priority">
+                <option value="0">P0 — critical</option>
+                <option value="1">P1 — high</option>
+                <option value="2" selected>P2 — normal</option>
+                <option value="3">P3 — low</option>
+                <option value="4">P4 — trivial</option>
+              </select>
+            </label>
+          </div>
+          <div class="field-row">
+            <label class="field">
+              <span class="field-label">Epic <span class="hint">(parent)</span></span>
+              <select name="epic">
+                <option value="" selected>— none —</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">Labels <span class="hint">(comma-separated)</span></span>
+              <input type="text" name="labels" autocomplete="off" placeholder="backend, api">
+            </label>
+          </div>
+          <div class="field-row">
+            <label class="field">
+              <span class="field-label">Blocked by <span class="hint">(upstream deps)</span></span>
+              <div class="chip-input" data-role="blockers">
+                <div class="chip-list" data-role="chips"></div>
+                <div class="chip-input-row">
+                  <input type="text" name="blockerInput" list="dep-suggest"
+                         autocomplete="off" placeholder="bd-… ↵">
+                  <span class="chip-input-type" data-role="type-slot"></span>
+                </div>
+              </div>
+            </label>
+            <label class="field">
+              <span class="field-label">Blocks <span class="hint">(downstream deps)</span></span>
+              <div class="chip-input" data-role="blocks">
+                <div class="chip-list" data-role="chips"></div>
+                <div class="chip-input-row">
+                  <input type="text" name="blocksInput" list="dep-suggest"
+                         autocomplete="off" placeholder="bd-… ↵">
+                  <span class="chip-input-type" data-role="type-slot"></span>
+                </div>
+              </div>
+            </label>
+          </div>
+          <label class="field">
+            <span class="field-label">Description <span class="hint">(Markdown)</span></span>
+            <textarea name="description" rows="5"
+                      placeholder="Context, acceptance criteria, etc."></textarea>
+          </label>
+          <div class="modal-actions">
+            <span class="form-status"></span>
+            <button type="button" class="btn btn-secondary new-issue-cancel">Cancel</button>
+            <button type="submit" class="btn btn-primary new-issue-submit">Create</button>
+          </div>
+        </form>
+      </div>
+    </div>`;
+
+  // opts.onCreated(id) — optional hook a view sets so it can register
+  // optimistic state (the Board pre-seeds its 'open' column override).
+  function openNewIssueModal(opts) {
+    opts = opts || {};
+    closeNewIssueModal();
+    document.body.insertAdjacentHTML('beforeend', NEW_ISSUE_HTML);
+
+    const overlay  = document.getElementById('new-issue-overlay');
+    const form     = overlay.querySelector('.new-issue-form');
+    const closeBtn = overlay.querySelector('.modal-close');
+    const cancel   = overlay.querySelector('.new-issue-cancel');
+    const submit   = overlay.querySelector('.new-issue-submit');
+    const statusEl = overlay.querySelector('.form-status');
+    const titleEl  = overlay.querySelector('input[name="title"]');
+
+    // Epic selector — every epic in the current data set, open ones
+    // first. Picking one links the new issue as its child (parent-child
+    // dep: new issue depends_on the epic) right after the create.
+    const epicSel = overlay.querySelector('select[name="epic"]');
+    const epics = (App.beads || [])
+      .filter(b => b.type === 'epic')
+      .sort((a, b) =>
+        ((a.status === 'closed') - (b.status === 'closed')) ||
+        String(a.title || a.id).localeCompare(String(b.title || b.id)));
+    for (const ep of epics) {
+      const o = document.createElement('option');
+      o.value = ep.id;
+      o.textContent = ep.id + ' — ' + (ep.title || 'no title').slice(0, 60) +
+                      (ep.status === 'closed' ? ' (closed)' : '');
+      epicSel.appendChild(o);
+    }
+
+    // Dep chip-inputs: one for "Blocked by" (upstream), one for "Blocks"
+    // (downstream). The shared <datalist id="dep-suggest"> lives in the
+    // permanent body of each host page.
+    refreshDepSuggestions();
+
+    // Wires a chip-input region. Returns an object with `values()` that
+    // yields [{id, type}, …] so the caller can build per-chip dep writes.
+    function wireChipInput(containerRole) {
+      const root = overlay.querySelector('[data-role="' + containerRole + '"]');
+      const list = root.querySelector('.chip-list');
+      const inp  = root.querySelector('input');
+      const slot = root.querySelector('[data-role="type-slot"]');
+      let typeSel = null;
+      if (slot && typeof App.buildDepTypeSelect === 'function') {
+        typeSel = App.buildDepTypeSelect('blocks');
+        slot.appendChild(typeSel);
+      }
+      const entries = new Map();   // id → type
+      function addChip(id) {
+        id = String(id || '').trim();
+        if (!id || entries.has(id)) return;
+        const type = typeSel ? typeSel.value : 'blocks';
+        entries.set(id, type);
+        const bead = App.beads.find(b => b.id === id);
+        const chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.dataset.id = id;
+        chip.dataset.type = type;
+        chip.title = (bead ? bead.title : id) + '  ·  type: ' + type;
+        chip.textContent = id;
+        if (type !== 'blocks') {
+          const tag = document.createElement('span');
+          tag.className = 'chip-type-tag';
+          tag.textContent = type;
+          chip.appendChild(tag);
+        }
+        const rm = document.createElement('button');
+        rm.type = 'button';
+        rm.className = 'chip-rm';
+        rm.textContent = '×';
+        rm.setAttribute('aria-label', 'Remove ' + id);
+        rm.addEventListener('click', () => { entries.delete(id); chip.remove(); });
+        chip.appendChild(rm);
+        list.appendChild(chip);
+      }
+      inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ',' || e.key === 'Tab') {
+          const v = inp.value.trim().replace(/,$/, '');
+          if (v) { e.preventDefault(); addChip(v); inp.value = ''; }
+        } else if (e.key === 'Backspace' && !inp.value) {
+          const chips = list.querySelectorAll('.chip');
+          if (chips.length) {
+            const last = chips[chips.length - 1];
+            entries.delete(last.dataset.id);
+            last.remove();
+          }
+        }
+      });
+      inp.addEventListener('change', () => {
+        const v = inp.value.trim();
+        if (v) { addChip(v); inp.value = ''; }
+      });
+      return {
+        values() {
+          const out = [];
+          for (const [id, type] of entries) out.push({ id, type });
+          return out;
+        },
+      };
+    }
+    const blockerInput = wireChipInput('blockers');
+    const blocksInput  = wireChipInput('blocks');
+
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) closeNewIssueModal();
+    });
+    closeBtn.addEventListener('click', closeNewIssueModal);
+    cancel.addEventListener('click', closeNewIssueModal);
+    document.addEventListener('keydown', newIssueEscHandler);
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const title = titleEl.value.trim();
+      if (!title) {
+        statusEl.textContent = 'Title is required';
+        statusEl.classList.add('is-error');
+        titleEl.focus();
+        return;
+      }
+      const data = new FormData(form);
+      const labelsRaw = (data.get('labels') || '').toString();
+      const labels = labelsRaw.split(',').map(s => s.trim()).filter(Boolean);
+      const epicId = (data.get('epic') || '').toString();
+      const payload = {
+        title,
+        issueType:   (data.get('issueType') || 'task').toString(),
+        priority:    parseInt(data.get('priority'), 10),
+        description: (data.get('description') || '').toString(),
+        labels,
+      };
+      submit.disabled = true;
+      statusEl.classList.remove('is-error');
+      statusEl.textContent = 'Creating…';
+
+      if (!window.__nppBridge) {
+        statusEl.textContent = 'native bridge unavailable';
+        statusEl.classList.add('is-error');
+        submit.disabled = false;
+        return;
+      }
+      const blockerEntries = blockerInput.values();   // blocking the new issue
+      const blocksEntries  = blocksInput.values();    // new issue blocks these
+      window.__nppBridge.call('createBead', payload).then(async (resp) => {
+        if (!resp.ok) {
+          statusEl.textContent = resp.error || 'create failed';
+          statusEl.classList.add('is-error');
+          submit.disabled = false;
+          return;
+        }
+        const newId = resp.bead && resp.bead.id;
+        if (!newId) {
+          showToast('issue created');
+          closeNewIssueModal();
+          return;
+        }
+        // Sequential dep writes — bd's embedded dolt backend can deadlock
+        // on concurrent writes within the same project. Each dep is:
+        //   Epic pick:       newId depends on epicId (type parent-child)
+        //   Blocked-by chip: newId depends on chipId (chipId blocks newId)
+        //   Blocks     chip: chipId depends on newId (newId blocks chipId)
+        const totalDeps = (epicId ? 1 : 0) +
+                          blockerEntries.length + blocksEntries.length;
+        const failed = [];
+        async function postDep(dependent, dependency, depType) {
+          try {
+            const r = await window.__nppBridge.call('depAdd', {
+              dependent, dependency, depType: depType || 'blocks',
+            });
+            if (!r.ok) failed.push(dependent + '←' + dependency +
+                                   ' (' + (r.error || 'failed') + ')');
+          } catch (e) {
+            failed.push(dependent + '←' + dependency +
+                        ' (' + ((e && e.message) || e) + ')');
+          }
+        }
+        if (totalDeps) {
+          statusEl.textContent = 'linking ' + totalDeps + ' dep' +
+                                 (totalDeps > 1 ? 's' : '') + '…';
+          if (epicId) await postDep(newId, epicId, 'parent-child');
+          for (const e of blockerEntries) await postDep(newId, e.id, e.type);
+          for (const e of blocksEntries)  await postDep(e.id, newId, e.type);
+        }
+        if (failed.length) {
+          showToast(newId + ' created; some deps failed: ' + failed.join('; '));
+        } else if (epicId && !blockerEntries.length && !blocksEntries.length) {
+          showToast(newId + ' created in epic ' + epicId);
+        } else if (totalDeps) {
+          showToast(newId + ' created with ' + totalDeps + ' dep' +
+                    (totalDeps > 1 ? 's' : ''));
+        } else {
+          showToast(newId + ' created');
+        }
+        if (typeof opts.onCreated === 'function') opts.onCreated(newId);
+        closeNewIssueModal();
+      }).catch((err) => {
+        statusEl.textContent = (err && err.message) || String(err);
+        statusEl.classList.add('is-error');
+        submit.disabled = false;
+      });
+    });
+
+    // Focus the title field and let the user start typing immediately.
+    setTimeout(() => titleEl.focus(), 0);
+  }
+  function closeNewIssueModal() {
+    const overlay = document.getElementById('new-issue-overlay');
+    if (overlay) overlay.remove();
+    document.removeEventListener('keydown', newIssueEscHandler);
+  }
+  function newIssueEscHandler(e) {
+    if (e.key === 'Escape') closeNewIssueModal();
+  }
+
   // ── Exports ─────────────────────────────────────────────────────────
   App.el                    = el;
   App.findBead              = findBead;
@@ -898,6 +1204,7 @@
   App.openBeadModal         = openBeadModal;
   App.closeBeadModal        = closeBeadModal;
   App.refreshDepSuggestions = refreshDepSuggestions;
+  App.openNewIssueModal     = openNewIssueModal;
   App.openBeadModalById = function (id) {
     if (typeof id !== 'string' || !id) return;
     openBeadModal(id);

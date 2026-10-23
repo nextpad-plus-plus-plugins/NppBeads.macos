@@ -241,6 +241,7 @@ static NSArray<NSString *> *collectStderrWarnings(NSString *stderrStr) {
     dispatch_queue_t _cacheQueue;
     BOOL   _probed;
     BOOL   _projectReady;
+    NSUInteger _reconcileGen;   // jsonl-reconcile burst coalescing (main-confined)
 }
 
 - (instancetype)initWithProjectDir:(NSString *)projectDir {
@@ -524,6 +525,60 @@ static NSArray<NSString *> *collectStderrWarnings(NSString *stderrStr) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+//  Data-source priority support
+// ─────────────────────────────────────────────────────────────────────
+- (void)exportAllJsonlWithCompletion:(void (^)(BdResult *))done {
+    [self _runOnIoQueue:^{
+        BdResult *r = [self _execute:@[@"export", @"--all"] stdin:nil expectsJson:NO];
+        dispatch_async(dispatch_get_main_queue(), ^{ if (done) done(r); });
+    }];
+}
+
+- (void)exportJsonlToProjectFileWithCompletion:(void (^)(BdResult *))done {
+    [self _runOnIoQueue:^{
+        BdResult *r = [self _execute:@[@"export", @"--all",
+                                       @"-o", @".beads/issues.jsonl"]
+                               stdin:nil expectsJson:NO];
+        dispatch_async(dispatch_get_main_queue(), ^{ if (done) done(r); });
+    }];
+}
+
+// Every successful WRITE funnels through here (replaces the bare
+// invalidateCache the write completions used to call). In jsonl-priority
+// mode, schedule ONE import→export reconcile ~0.4s after the last write
+// of a burst. The io queue is CONCURRENT, so the generation counter is
+// confined to the main queue instead.
+- (void)_noteSuccessfulWrite {
+    [self invalidateCache];
+    if (!self.reconcileJsonlAfterWrite) return;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        __strong typeof(self) s0 = weakSelf;
+        if (!s0) return;
+        NSUInteger gen = ++s0->_reconcileGen;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            __strong typeof(self) s = weakSelf;
+            if (!s || gen != s->_reconcileGen || !s.reconcileJsonlAfterWrite) return;
+            [s _runOnIoQueue:^{
+                // Import first (stale-guarded; protects a freshly pulled,
+                // newer jsonl from being clobbered), then export the
+                // merged truth back to the file.
+                BdResult *imp = [s _execute:@[@"import"] stdin:nil expectsJson:NO];
+                if (!imp.ok) NSLog(@"[NppBeads] jsonl reconcile: import failed — %@",
+                                   imp.errorMessage);
+                BdResult *exp = [s _execute:@[@"export", @"--all",
+                                              @"-o", @".beads/issues.jsonl"]
+                                      stdin:nil expectsJson:NO];
+                if (!exp.ok) NSLog(@"[NppBeads] jsonl reconcile: export failed — %@",
+                                   exp.errorMessage);
+                else NSLog(@"[NppBeads] jsonl reconcile after write: imported+exported");
+            }];
+        });
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────────
 //  Read commands
 // ─────────────────────────────────────────────────────────────────────
 - (void)listAllIssuesWithCompletion:(void (^)(BdResult *))done {
@@ -548,7 +603,17 @@ static NSArray<NSString *> *collectStderrWarnings(NSString *stderrStr) {
     BdResult *hit = [self _cachedForKey:key ttl:0.25];
     if (hit) { dispatch_async(dispatch_get_main_queue(), ^{ if (done) done(hit); }); return; }
     [self _runOnIoQueue:^{
-        BdResult *r = [self _execute:@[@"show", issueId, @"--json"] stdin:nil];
+        // bd 1.3 omits comment BODIES from `show --json` by default (the
+        // issue carries comment_count + comments_omitted instead) — the
+        // modal's comment thread needs them, so ask explicitly. Older bd
+        // doesn't know the flag (it always included comments) — fall back.
+        BdResult *r = [self _execute:@[@"show", issueId,
+                                       @"--include-comments", @"--json"]
+                               stdin:nil];
+        if (!r.ok && [r.errorMessage rangeOfString:@"unknown flag"
+                                           options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            r = [self _execute:@[@"show", issueId, @"--json"] stdin:nil];
+        }
         // bd show --json returns an ARRAY even for a single id. Unwrap.
         if (r.ok && [r.json isKindOfClass:[NSArray class]]) {
             NSArray *arr = (NSArray *)r.json;
@@ -615,7 +680,7 @@ static NSArray<NSString *> *collectStderrWarnings(NSString *stderrStr) {
             NSArray *a = (NSArray *)r.json;
             if (a.count) r.json = a.firstObject;
         }
-        if (r.ok) [self invalidateCache];
+        if (r.ok) [self _noteSuccessfulWrite];
         dispatch_async(dispatch_get_main_queue(), ^{ if (done) done(r); });
     }];
 }
@@ -671,7 +736,7 @@ static NSArray<NSString *> *collectStderrWarnings(NSString *stderrStr) {
             NSArray *a = (NSArray *)r.json;
             if (a.count) r.json = a.firstObject;
         }
-        if (r.ok) [self invalidateCache];
+        if (r.ok) [self _noteSuccessfulWrite];
         dispatch_async(dispatch_get_main_queue(), ^{ if (done) done(r); });
     }];
 }
@@ -689,7 +754,7 @@ static NSArray<NSString *> *collectStderrWarnings(NSString *stderrStr) {
             NSArray *a = (NSArray *)r.json;
             if (a.count) r.json = a.firstObject;
         }
-        if (r.ok) [self invalidateCache];
+        if (r.ok) [self _noteSuccessfulWrite];
         dispatch_async(dispatch_get_main_queue(), ^{ if (done) done(r); });
     }];
 }
@@ -714,7 +779,7 @@ static NSArray<NSString *> *collectStderrWarnings(NSString *stderrStr) {
             NSArray *a = (NSArray *)r.json;
             if (a.count) r.json = a.firstObject;
         }
-        if (r.ok) [self invalidateCache];
+        if (r.ok) [self _noteSuccessfulWrite];
         dispatch_async(dispatch_get_main_queue(), ^{ if (done) done(r); });
     }];
 }
@@ -737,7 +802,7 @@ static NSArray<NSString *> *collectStderrWarnings(NSString *stderrStr) {
             NSArray *a = (NSArray *)r.json;
             if (a.count) r.json = a.firstObject;
         }
-        if (r.ok) [self invalidateCache];
+        if (r.ok) [self _noteSuccessfulWrite];
         dispatch_async(dispatch_get_main_queue(), ^{ if (done) done(r); });
     }];
 }
@@ -756,7 +821,7 @@ static NSArray<NSString *> *collectStderrWarnings(NSString *stderrStr) {
     [self _runOnIoQueue:^{
         BdResult *r = [self _execute:@[@"dep", @"add", dependentId, dependencyId,
                                         @"--type", type, @"--json"] stdin:nil];
-        if (r.ok) [self invalidateCache];
+        if (r.ok) [self _noteSuccessfulWrite];
         dispatch_async(dispatch_get_main_queue(), ^{ if (done) done(r); });
     }];
 }
@@ -773,7 +838,7 @@ static NSArray<NSString *> *collectStderrWarnings(NSString *stderrStr) {
     [self _runOnIoQueue:^{
         BdResult *r = [self _execute:@[@"dep", @"remove", dependentId, dependencyId,
                                         @"--json"] stdin:nil];
-        if (r.ok) [self invalidateCache];
+        if (r.ok) [self _noteSuccessfulWrite];
         dispatch_async(dispatch_get_main_queue(), ^{ if (done) done(r); });
     }];
 }
@@ -792,7 +857,7 @@ static NSArray<NSString *> *collectStderrWarnings(NSString *stderrStr) {
         // we always pass it because our UI already confirmed with the user.
         BdResult *r = [self _execute:@[@"delete", issueId, @"--force", @"--json"]
                                 stdin:nil];
-        if (r.ok) [self invalidateCache];
+        if (r.ok) [self _noteSuccessfulWrite];
         dispatch_async(dispatch_get_main_queue(), ^{ if (done) done(r); });
     }];
 }
@@ -820,7 +885,7 @@ static NSArray<NSString *> *collectStderrWarnings(NSString *stderrStr) {
             NSArray *a = (NSArray *)r.json;
             if (a.count) r.json = a.firstObject;
         }
-        if (r.ok) [self invalidateCache];
+        if (r.ok) [self _noteSuccessfulWrite];
         dispatch_async(dispatch_get_main_queue(), ^{ if (done) done(r); });
     }];
 }
@@ -844,7 +909,7 @@ static NSArray<NSString *> *collectStderrWarnings(NSString *stderrStr) {
         BdResult *r = [self _execute:@[@"comment", issueId,
                                         @"--stdin", @"--json"]
                                 stdin:body];
-        if (r.ok) [self invalidateCache];
+        if (r.ok) [self _noteSuccessfulWrite];
         dispatch_async(dispatch_get_main_queue(), ^{ if (done) done(r); });
     }];
 }

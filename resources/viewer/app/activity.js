@@ -189,6 +189,18 @@
     ctrlEl.appendChild(buildFilter('Status',   statusFilter, 'stats',
       (v) => App.statusColor(v).label));
 
+    // Rightmost: same New-issue entry point as the Board (shared modal
+    // in detail.js). No optimistic hook — the native re-push after the
+    // create refreshes the feed.
+    const newBtn = document.createElement('button');
+    newBtn.type = 'button';
+    newBtn.id = 'new-issue-btn';
+    newBtn.className = 'new-issue-btn';
+    newBtn.title = 'Create a new issue (bd create)';
+    newBtn.textContent = '+ New issue';
+    newBtn.addEventListener('click', () => App.openNewIssueModal());
+    ctrlEl.appendChild(newBtn);
+
     // Click anywhere outside an open filter closes it.
     document.addEventListener('click', (e) => {
       if (!e.target.closest('.filter')) closeAllMenus();

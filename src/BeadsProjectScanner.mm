@@ -12,7 +12,13 @@
     if (![fm fileExistsAtPath:beadsDir isDirectory:&isDir] || !isDir) return NO;
     NSString *jsonl = [beadsDir stringByAppendingPathComponent:@"issues.jsonl"];
     NSString *db    = [beadsDir stringByAppendingPathComponent:@"beads.db"];
-    return [fm fileExistsAtPath:jsonl] || [fm fileExistsAtPath:db];
+    // bd ≥1.x keeps the real data in an embedded Dolt directory and (since
+    // bd 1.3) only writes issues.jsonl on explicit export — a Dolt-only
+    // workspace is fully usable through the bd backend.
+    NSString *dolt  = [beadsDir stringByAppendingPathComponent:@"embeddeddolt"];
+    BOOL doltIsDir  = NO;
+    BOOL hasDolt    = [fm fileExistsAtPath:dolt isDirectory:&doltIsDir] && doltIsDir;
+    return [fm fileExistsAtPath:jsonl] || [fm fileExistsAtPath:db] || hasDolt;
 }
 
 + (nullable BeadsProject *)findProjectFromPath:(nullable NSString *)filePath {
@@ -38,7 +44,10 @@
             p.projectRoot = dir;
             NSString *jsonl = [candidate stringByAppendingPathComponent:@"issues.jsonl"];
             NSString *db    = [candidate stringByAppendingPathComponent:@"beads.db"];
-            if ([fm fileExistsAtPath:jsonl]) p.jsonlPath = jsonl;
+            // jsonlPath is the EXPECTED location (bd export target) even when
+            // the file doesn't exist yet — Dolt-only workspaces create it on
+            // the first export, and consumers tolerate a missing file.
+            p.jsonlPath = jsonl;
             if ([fm fileExistsAtPath:db])    p.dbPath    = db;
             return p;
         }
@@ -61,7 +70,7 @@
     p.projectRoot = [p.beadsDir stringByDeletingLastPathComponent];
     NSString *jsonl = [p.beadsDir stringByAppendingPathComponent:@"issues.jsonl"];
     NSString *db    = [p.beadsDir stringByAppendingPathComponent:@"beads.db"];
-    if ([fm fileExistsAtPath:jsonl]) p.jsonlPath = jsonl;
+    p.jsonlPath = jsonl;   // expected location; may not exist yet (Dolt-only)
     if ([fm fileExistsAtPath:db])    p.dbPath    = db;
     return p;
 }

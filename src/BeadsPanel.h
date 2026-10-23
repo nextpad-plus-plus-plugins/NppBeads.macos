@@ -49,7 +49,7 @@ typedef NS_ENUM(NSInteger, BeadsThemePref) {
     BeadsThemePrefDark  = 2,
 };
 
-@interface BeadsPanel : NSView <WKNavigationDelegate, WKScriptMessageHandler, NSSearchFieldDelegate>
+@interface BeadsPanel : NSView <WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, NSSearchFieldDelegate>
 
 // Absolute path to the plugin's `resources/` directory. Must be set via
 // the designated init — the panel uses it to `loadFileURL` during init.

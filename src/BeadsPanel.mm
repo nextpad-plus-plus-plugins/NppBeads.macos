@@ -52,6 +52,9 @@ static const NSUInteger kBeadsRecentProjectsCap = 10;
 // project's standardized root = sandbox OFF for that project. Stored as
 // an array because NSSet isn't plist-native.
 static NSString * const kBeadsAutoPushProjectsKey = @"NppBeadsAutoPushProjects";
+// Projects whose panel renders from issues.jsonl instead of the Dolt DB
+// (the per-project "Data Source" escape hatch; absent = Dolt priority).
+static NSString * const kBeadsJsonlPriorityProjectsKey = @"NppBeadsJsonlPriorityProjects";
 
 // Phase 6 — per-project "last Activity view visit" timestamp. Drives the
 // status-bar "N new" badge: count issues with updated_at > lastVisit.
@@ -99,6 +102,12 @@ static const CGFloat kBeadsZoomStep    = 0.10;
     BeadsPoll                *_poll;            // active only when bd backend is active
     BdEventsTail             *_tail;            // events-feed live sync (bd >= 1.3);
                                                 // mutually exclusive with _poll
+    // Data-source priority: when YES the webview renders from the Dolt DB
+    // (`bd export` to stdout) instead of the issues.jsonl file. Default on
+    // in bd mode; per-project jsonl-priority flips it off (escape hatch).
+    BOOL                      _renderFromBd;
+    BOOL                      _bcInFlight;      // one dolt-export broadcast at a time
+    BOOL                      _bcPending;       // coalesce broadcasts that arrive mid-flight
 
     BeadsViewMode       _viewMode;
     BeadsThemePref      _themePref;
@@ -260,6 +269,11 @@ static const CGFloat kBeadsZoomStep    = 0.10;
     _webView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:config];
     _webView.translatesAutoresizingMaskIntoConstraints = NO;
     _webView.navigationDelegate = self;
+    // WKWebView ships NO chrome for window.alert()/confirm(): without a
+    // UIDelegate, confirm() silently returns false — which made the
+    // detail modal's Delete button (and the "close with open blockers?"
+    // prompt) a no-op. Route them to native NSAlert sheets.
+    _webView.UIDelegate = self;
 
     // Apply the persisted page zoom — fresh installs default to
     // kBeadsZoomDefault so Dashboard / Insights fit a reasonable panel
@@ -582,6 +596,9 @@ static const CGFloat kBeadsZoomStep    = 0.10;
     _poll = nil;
     [_tail stop];
     _tail = nil;
+    _renderFromBd = NO;        // until the new project's probe says otherwise
+    _bcInFlight = NO;
+    _bcPending  = NO;
 
     self.project = project;
     [_ds bindToPath:project.jsonlPath];
@@ -615,14 +632,27 @@ static const CGFloat kBeadsZoomStep    = 0.10;
             }
             if (bdPresent && projectReady) {
                 s->_activeDataSource = [[BdDataSource alloc] initWithRunner:probedRunner];
-                NSLog(@"[NppBeads] bd backend active — %@",
-                      s->_activeDataSource.backendLabel);
+                // Data-source priority: default is render-from-Dolt; the
+                // per-project jsonl escape hatch flips the view back to the
+                // file (and reconciles it after every write).
+                BOOL jsonlPri = [BeadsPanel _jsonlPriorityForProject:probedRunner.projectDir];
+                s->_renderFromBd = !jsonlPri;
+                s->_ds.fedExternally = s->_renderFromBd;
+                probedRunner.reconcileJsonlAfterWrite = jsonlPri;
+                NSLog(@"[NppBeads] bd backend active — %@ (render: %@)",
+                      s->_activeDataSource.backendLabel,
+                      s->_renderFromBd ? @"dolt" : @"jsonl");
                 // Live sync: events feed on bd >= 1.3 (with a one-time
                 // per-project opt-in prompt for the journal), else the
                 // classic 2s poll. Either one pauses whenever the host
                 // window isn't key (see _installWindowKeyStateObservers).
                 [s _startLiveSyncWithRunner:probedRunner];
+                // Upgrade the view from the bind-time file snapshot to the
+                // live database (or re-read the file in jsonl mode).
+                [s _broadcastDataChanged];
             } else {
+                s->_renderFromBd = NO;
+                s->_ds.fedExternally = NO;
                 NSLog(@"[NppBeads] JSONL fallback (bd=%d, projectReady=%d)",
                       bdPresent, projectReady);
             }
@@ -698,6 +728,9 @@ static const CGFloat kBeadsZoomStep    = 0.10;
 }
 
 - (void)reloadData {
+    // Dolt-priority: "reload" means a fresh pull from the database, not a
+    // file re-read. _broadcastDataChanged owns that path (incl. coalescing).
+    if (_renderFromBd && _bdRunner) { [self _broadcastDataChanged]; return; }
     [_ds reload];
     [self _refreshStatusBar];
     // Content-hash gate: if the JSONL hasn't actually changed (e.g. watcher
@@ -1061,6 +1094,25 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
     add(@"Reveal issues.jsonl in Finder",  @selector(ctxRevealJsonl:));
     add(@"Open .beads/ folder in Finder",  @selector(openBeadsDirInFinder:));
     [m addItem:[NSMenuItem separatorItem]];
+    // Data-source priority — mutually exclusive radio pair, persisted per
+    // project. Checkmarks are computed in validateMenuItem:.
+    {
+        NSMenuItem *srcItem = [[NSMenuItem alloc] initWithTitle:@"Data Source"
+                                                         action:nil
+                                                  keyEquivalent:@""];
+        NSMenu *srcMenu = [[NSMenu alloc] initWithTitle:@"Data Source"];
+        NSMenuItem *dolt = [srcMenu addItemWithTitle:@"Prefer local Dolt DB (live via bd)"
+                                              action:@selector(_didPickDoltPriority:)
+                                       keyEquivalent:@""];
+        dolt.target = self;
+        NSMenuItem *jsonl = [srcMenu addItemWithTitle:@"Prefer issues.jsonl (file on disk)"
+                                               action:@selector(_didPickJsonlPriority:)
+                                        keyEquivalent:@""];
+        jsonl.target = self;
+        srcItem.submenu = srcMenu;
+        [m addItem:srcItem];
+    }
+    add(@"Export issues.jsonl now (from Dolt)", @selector(_didExportJsonlNow:));
     // Phase 3.5 — per-project auto-push opt-in. Checkmark state is
     // computed in validateMenuItem: against the currently-bound project.
     add(@"Enable bd auto-push for this project", @selector(_didToggleAutoPush:));
@@ -1094,6 +1146,22 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
         BOOL on = [BeadsPanel _autoPushEnabledForProject:self.project.projectRoot];
         item.state = on ? NSControlStateValueOn : NSControlStateValueOff;
         return YES;
+    }
+    if (item.action == @selector(_didPickDoltPriority:) ||
+        item.action == @selector(_didPickJsonlPriority:)) {
+        if (!self.project || self.project.projectRoot.length == 0) {
+            item.state = NSControlStateValueOff;
+            return NO;
+        }
+        BOOL jsonlPri = [BeadsPanel _jsonlPriorityForProject:self.project.projectRoot];
+        BOOL isJsonlItem = (item.action == @selector(_didPickJsonlPriority:));
+        item.state = (jsonlPri == isJsonlItem) ? NSControlStateValueOn
+                                               : NSControlStateValueOff;
+        return YES;
+    }
+    if (item.action == @selector(_didExportJsonlNow:)) {
+        return self.project != nil &&
+               [_activeDataSource isKindOfClass:[BdDataSource class]];
     }
     return YES;
 }
@@ -1502,7 +1570,8 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
             a.messageText = @"Not a beads project";
             a.informativeText =
                 @"The chosen directory doesn't contain a usable .beads/ "
-                 "folder (expected issues.jsonl or beads.db inside).";
+                 "folder (expected issues.jsonl, beads.db, or an "
+                 "embeddeddolt/ database inside).";
             [a addButtonWithTitle:@"OK"];
             [a runModal];
             return;
@@ -1553,6 +1622,41 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
                                               forKey:kBeadsAutoPushProjectsKey];
 }
 
+// Same persistence shape as auto-push: a defaults array of standardized
+// project roots that opted into jsonl priority.
++ (BOOL)_jsonlPriorityForProject:(NSString *)projectRoot {
+    NSString *std = [projectRoot stringByStandardizingPath];
+    if (std.length == 0) return NO;
+    NSArray *arr = [[NSUserDefaults standardUserDefaults]
+                    arrayForKey:kBeadsJsonlPriorityProjectsKey];
+    if (![arr isKindOfClass:[NSArray class]]) return NO;
+    for (id entry in arr) {
+        if (![entry isKindOfClass:[NSString class]]) continue;
+        if ([[(NSString *)entry stringByStandardizingPath] isEqualToString:std]) return YES;
+    }
+    return NO;
+}
+
++ (void)_setJsonlPriority:(BOOL)enabled forProject:(NSString *)projectRoot {
+    NSString *std = [projectRoot stringByStandardizingPath];
+    if (std.length == 0) return;
+    NSMutableArray *list =
+        [[[NSUserDefaults standardUserDefaults]
+          arrayForKey:kBeadsJsonlPriorityProjectsKey] mutableCopy];
+    if (!list) list = [NSMutableArray array];
+    NSMutableIndexSet *kill = [NSMutableIndexSet indexSet];
+    [list enumerateObjectsUsingBlock:^(id obj, NSUInteger idx, BOOL *stop) {
+        if ([obj isKindOfClass:[NSString class]] &&
+            [[(NSString *)obj stringByStandardizingPath] isEqualToString:std]) {
+            [kill addIndex:idx];
+        }
+    }];
+    [list removeObjectsAtIndexes:kill];
+    if (enabled) [list addObject:std];
+    [[NSUserDefaults standardUserDefaults] setObject:list
+                                              forKey:kBeadsJsonlPriorityProjectsKey];
+}
+
 // Overflow-menu action: flip auto-push for the currently bound project.
 // Updates persistence, the live runner's useSandbox flag, and invalidates
 // the read cache so the next bd call reflects the new mode.
@@ -1581,6 +1685,53 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
         [a addButtonWithTitle:@"OK"];
         [a runModal];
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+//  Data Source priority (Dolt-live default · issues.jsonl escape hatch)
+// ─────────────────────────────────────────────────────────────────────────
+- (void)_didPickDoltPriority:(NSMenuItem *)sender  { [self _setDataSourcePriorityJsonl:NO];  }
+- (void)_didPickJsonlPriority:(NSMenuItem *)sender { [self _setDataSourcePriorityJsonl:YES]; }
+
+- (void)_setDataSourcePriorityJsonl:(BOOL)jsonlPriority {
+    if (!self.project || self.project.projectRoot.length == 0) { NSBeep(); return; }
+    [BeadsPanel _setJsonlPriority:jsonlPriority forProject:self.project.projectRoot];
+    BOOL bdActive = [_activeDataSource isKindOfClass:[BdDataSource class]];
+    _renderFromBd = bdActive && !jsonlPriority;
+    _ds.fedExternally = _renderFromBd;
+    if (_bdRunner) _bdRunner.reconcileJsonlAfterWrite = (bdActive && jsonlPriority);
+    if (!_renderFromBd) [_ds reload];    // back to the file as the truth
+    NSLog(@"[NppBeads] data source priority → %@ for %@ (bd %@)",
+          jsonlPriority ? @"jsonl" : @"dolt",
+          self.project.projectRoot,
+          bdActive ? @"active" : @"inactive");
+    [self _broadcastDataChanged];
+}
+
+- (void)_didExportJsonlNow:(NSMenuItem *)sender {
+    if (!_bdRunner || ![_activeDataSource isKindOfClass:[BdDataSource class]]) {
+        NSBeep();
+        return;
+    }
+    BdCommandRunner *runner = _bdRunner;
+    __weak typeof(self) weakSelf = self;
+    [runner exportJsonlToProjectFileWithCompletion:^(BdResult *res) {
+        __strong typeof(self) s = weakSelf;
+        if (!s || s->_bdRunner != runner) return;
+        if (res.ok) {
+            NSLog(@"[NppBeads] exported issues.jsonl from Dolt (manual)");
+            // The file may have just been created (Dolt-only workspace) —
+            // (re)arm the watcher, then refresh the view if it's file-driven.
+            if (s.project.jsonlPath.length) [s->_watcher watchPath:s.project.jsonlPath];
+            if (!s->_renderFromBd) [s _broadcastDataChanged];
+        } else {
+            NSAlert *a = [[NSAlert alloc] init];
+            a.messageText = @"Export failed";
+            a.informativeText = res.errorMessage ?: @"bd export returned an error.";
+            [a addButtonWithTitle:@"OK"];
+            [a runModal];
+        }
+    }];
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1638,6 +1789,11 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
     NSUInteger blkd  = [_ds blockedIssueCount];
     NSUInteger cls   = [_ds closedIssueCount];
     NSString *backend = _activeDataSource.backendLabel ?: @"read-only (JSONL)";
+    if ([_activeDataSource isKindOfClass:[BdDataSource class]]) {
+        // Surface which source feeds the view so the mode is never invisible.
+        backend = [backend stringByAppendingString:
+                   (_renderFromBd ? @" · dolt" : @" · jsonl")];
+    }
     NSUInteger newCount = [self _newActivityCountSinceLastVisit];
     NSString *badge = (newCount > 0)
         ? [NSString stringWithFormat:@" · ● %lu new", (unsigned long)newCount]
@@ -1830,10 +1986,49 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
 // (so a subsequent navigation sees the new data) and via reload() so
 // the currently-rendered view updates now.
 - (void)_broadcastDataChanged {
+    // Dolt-priority render: pull canonical JSONL text straight from the
+    // database (`bd export --all` to stdout — same schema as the file,
+    // incl. dependencies), adopt it into _ds so counts/badges/preload all
+    // stay on one code path, then push. The jsonl FILE is not consulted,
+    // so bd 1.3's export throttling can't make the view stale.
+    if (_renderFromBd && _bdRunner &&
+        [_activeDataSource isKindOfClass:[BdDataSource class]]) {
+        if (_bcInFlight) { _bcPending = YES; return; }
+        _bcInFlight = YES;
+        [_activeDataSource invalidateCache];
+        BdCommandRunner *runner = _bdRunner;
+        __weak typeof(self) weakSelf = self;
+        [runner exportAllJsonlWithCompletion:^(BdResult *res) {
+            __strong typeof(self) s = weakSelf;
+            if (!s) return;
+            s->_bcInFlight = NO;
+            if (s->_bdRunner != runner) return;   // superseded by later bind
+            NSString *fresh;
+            if (res.ok && res.rawStdout != nil) {
+                fresh = res.rawStdout;
+                [s->_ds adoptRawText:fresh];
+            } else {
+                NSLog(@"[NppBeads] dolt render refresh failed (%@) — keeping last data",
+                      res.errorMessage ?: @"?");
+                fresh = [s->_ds rawText] ?: @"";
+            }
+            [s _refreshStatusBar];
+            [s _pushJsonlToWebview:fresh];
+            if (s->_bcPending) { s->_bcPending = NO; [s _broadcastDataChanged]; }
+        }];
+        return;
+    }
+
+    // jsonl-priority (or no bd backend): the file on disk is the truth.
     [_activeDataSource invalidateCache];
     [_ds reload];                         // JSONL cache — forces re-read on next rawText
     NSString *fresh = [_ds rawText] ?: @"";
     [self _refreshStatusBar];             // counters in status bar
+    [self _pushJsonlToWebview:fresh];
+}
+
+- (void)_pushJsonlToWebview:(NSString *)fresh {
+    _jsonlBytesLastSeen = fresh.length;   // keep reloadData's change gate honest
     NSString *jsLit = jsStringLiteral(fresh);
     NSString *js = [NSString stringWithFormat:
         @"window.__nppBeadsPreloadedJsonl = %@;"
@@ -2098,6 +2293,53 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
     [_webView evaluateJavaScript:js completionHandler:^(id r, NSError *e) {
         if (e) NSLog(@"[NppBeads] receiveJsonl eval error: %@", e);
     }];
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+//  WKUIDelegate — native panels for JS alert()/confirm()
+// ─────────────────────────────────────────────────────────────────────────
+// WebKit suspends the page's JS until the completion handler runs, which
+// is exactly the synchronous contract confirm() promises the page. Shown
+// as a sheet on our window when we have one (dock panel / floating panel
+// / standalone app window all do); bare runModal as a headless fallback.
+
+- (void)webView:(WKWebView *)webView
+    runJavaScriptAlertPanelWithMessage:(NSString *)message
+                      initiatedByFrame:(WKFrameInfo *)frame
+                     completionHandler:(void (^)(void))completionHandler {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Beads";
+    alert.informativeText = message ?: @"";
+    [alert addButtonWithTitle:@"OK"];
+    if (self.window) {
+        [alert beginSheetModalForWindow:self.window
+                      completionHandler:^(NSModalResponse r) {
+            (void)r;
+            completionHandler();
+        }];
+    } else {
+        [alert runModal];
+        completionHandler();
+    }
+}
+
+- (void)webView:(WKWebView *)webView
+    runJavaScriptConfirmPanelWithMessage:(NSString *)message
+                        initiatedByFrame:(WKFrameInfo *)frame
+                       completionHandler:(void (^)(BOOL))completionHandler {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Beads";
+    alert.informativeText = message ?: @"";
+    [alert addButtonWithTitle:@"OK"];       // first = default, returns YES
+    [alert addButtonWithTitle:@"Cancel"];
+    if (self.window) {
+        [alert beginSheetModalForWindow:self.window
+                      completionHandler:^(NSModalResponse r) {
+            completionHandler(r == NSAlertFirstButtonReturn);
+        }];
+    } else {
+        completionHandler([alert runModal] == NSAlertFirstButtonReturn);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────

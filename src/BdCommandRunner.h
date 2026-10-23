@@ -127,6 +127,28 @@ typedef NS_ENUM(NSInteger, BdErrorKind) {
 - (void)enableEventsJournalWithCompletion:(void (^)(BdResult *res))done;
 
 // ─────────────────────────────────────────────────────────────────────
+//  Data-source priority support (render-from-Dolt + jsonl escape hatch).
+
+/** `bd export --all` to STDOUT — the canonical JSONL text, fresh from the
+    Dolt database, exactly the shape the webview consumes. Side-effect
+    free (does NOT touch .beads/issues.jsonl). Completion on main;
+    res.rawStdout carries the text. */
+- (void)exportAllJsonlWithCompletion:(void (^)(BdResult *res))done;
+
+/** `bd export --all -o .beads/issues.jsonl` — refresh the on-disk file
+    from Dolt (manual "Export now" + jsonl-mode reconcile). Main-queue
+    completion. */
+- (void)exportJsonlToProjectFileWithCompletion:(void (^)(BdResult *res))done;
+
+/** When YES (the panel sets this in jsonl-priority mode), every
+    successful bd WRITE schedules a coalesced reconcile: `bd import`
+    (stale-guarded — folds any NEWER rows from the file, e.g. a freshly
+    git-pulled jsonl, into Dolt) followed by `bd export -o` so the file
+    reflects the merged truth and the panel's file-driven view shows the
+    user's own edit. Off by default. */
+@property (nonatomic, assign) BOOL reconcileJsonlAfterWrite;
+
+// ─────────────────────────────────────────────────────────────────────
 //  Read commands — cached (750 ms list, 250 ms show).
 // ─────────────────────────────────────────────────────────────────────
 

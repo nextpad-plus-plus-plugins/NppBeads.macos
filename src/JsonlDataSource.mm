@@ -19,16 +19,23 @@
 - (void)bindToPath:(NSString *)path {
     if (_jsonlPath == path || [_jsonlPath isEqualToString:path]) return;
     _jsonlPath = [path copy];
+    _fedExternally = NO;   // fresh project → file is the truth until told otherwise
     [self reload];
 }
 
 - (void)reload {
+    if (_fedExternally) return;   // adopted (Dolt-exported) text is current
     _loaded       = NO;
     _cachedText   = @"";
     _cachedIssues = @[];
     _cntOpen      = 0;
     _cntBlocked   = 0;
     _cntClosed    = 0;
+}
+
+- (void)adoptRawText:(NSString *)text {
+    _loaded = YES;
+    [self _ingestText:(text ?: @"")];
 }
 
 - (void)_loadIfNeeded {
@@ -52,7 +59,13 @@
         text = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
     }
     if (!text) text = @"";
+    [self _ingestText:text];
+}
+
+// Shared by the file path and adoptRawText: — parse + recount.
+- (void)_ingestText:(NSString *)text {
     _cachedText = text;
+    _cntOpen = 0; _cntBlocked = 0; _cntClosed = 0;
 
     NSMutableArray<NSDictionary *> *rows = [NSMutableArray array];
     [text enumerateLinesUsingBlock:^(NSString * _Nonnull line, BOOL * _Nonnull stop) {

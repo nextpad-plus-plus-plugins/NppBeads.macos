@@ -368,214 +368,14 @@
   }
 
 
-  // ── New issue modal ─────────────────────────────────────────────────
-  // Tiny inline form that posts `createBead` through the native bridge.
-  // Kept self-contained so the Board view doesn't need to know about the
-  // Rich/Issues views (they can grow their own entry points later).
-  function openNewIssueModal() {
-    closeNewIssueModal();
-    const tpl = document.getElementById('new-issue-tpl');
-    if (!tpl) return;
-    const frag = tpl.content.firstElementChild.cloneNode(true);
-    document.body.appendChild(frag);
-
-    const overlay  = document.getElementById('new-issue-overlay');
-    const form     = overlay.querySelector('.new-issue-form');
-    const closeBtn = overlay.querySelector('.modal-close');
-    const cancel   = overlay.querySelector('.new-issue-cancel');
-    const submit   = overlay.querySelector('.new-issue-submit');
-    const statusEl = overlay.querySelector('.form-status');
-    const titleEl  = overlay.querySelector('input[name="title"]');
-
-    // Dep chip-inputs: one for "Blocked by" (upstream), one for "Blocks"
-    // (downstream). The shared <datalist id="dep-suggest"> lives in the
-    // permanent body (board.html) so the detail-modal dep editor can use
-    // the same autocomplete pool without re-defining it.
-    refreshDepSuggestions();
-
-    // Wires a chip-input region. Returns an object with `values()` that
-    // yields [{id, type}, …] so the caller can build per-chip dep writes.
-    //
-    // If the region has a <span data-role="type-slot"></span> we mount a
-    // dep-type <select> into it — chips created while the select shows
-    // "blocks" record type=blocks, chips created while it shows
-    // "parent-child" record type=parent-child, etc. Chip type is locked
-    // at add time (visible in the chip's little tag suffix).
-    function wireChipInput(containerRole) {
-      const root = overlay.querySelector('[data-role="' + containerRole + '"]');
-      const list = root.querySelector('.chip-list');
-      const inp  = root.querySelector('input');
-      const slot = root.querySelector('[data-role="type-slot"]');
-      let typeSel = null;
-      if (slot && typeof App.buildDepTypeSelect === 'function') {
-        typeSel = App.buildDepTypeSelect('blocks');
-        slot.appendChild(typeSel);
-      }
-      const entries = new Map();   // id → type
-      function addChip(id) {
-        id = String(id || '').trim();
-        if (!id || entries.has(id)) return;
-        const type = typeSel ? typeSel.value : 'blocks';
-        entries.set(id, type);
-        const bead = App.beads.find(b => b.id === id);
-        const chip = document.createElement('span');
-        chip.className = 'chip';
-        chip.dataset.id = id;
-        chip.dataset.type = type;
-        chip.title = (bead ? bead.title : id) + '  ·  type: ' + type;
-        chip.textContent = id;
-        if (type !== 'blocks') {
-          // Visually distinguish non-default types so the user can see
-          // at a glance which chips will create which kind of dep.
-          const tag = document.createElement('span');
-          tag.className = 'chip-type-tag';
-          tag.textContent = type;
-          chip.appendChild(tag);
-        }
-        const rm = document.createElement('button');
-        rm.type = 'button';
-        rm.className = 'chip-rm';
-        rm.textContent = '×';
-        rm.setAttribute('aria-label', 'Remove ' + id);
-        rm.addEventListener('click', () => { entries.delete(id); chip.remove(); });
-        chip.appendChild(rm);
-        list.appendChild(chip);
-      }
-      inp.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ',' || e.key === 'Tab') {
-          const v = inp.value.trim().replace(/,$/, '');
-          if (v) { e.preventDefault(); addChip(v); inp.value = ''; }
-        } else if (e.key === 'Backspace' && !inp.value) {
-          const chips = list.querySelectorAll('.chip');
-          if (chips.length) {
-            const last = chips[chips.length - 1];
-            entries.delete(last.dataset.id);
-            last.remove();
-          }
-        }
-      });
-      inp.addEventListener('change', () => {
-        const v = inp.value.trim();
-        if (v) { addChip(v); inp.value = ''; }
-      });
-      return {
-        values() {
-          const out = [];
-          for (const [id, type] of entries) out.push({ id, type });
-          return out;
-        },
-      };
-    }
-    const blockerInput = wireChipInput('blockers');
-    const blocksInput  = wireChipInput('blocks');
-
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) closeNewIssueModal();
-    });
-    closeBtn.addEventListener('click', closeNewIssueModal);
-    cancel.addEventListener('click', closeNewIssueModal);
-    document.addEventListener('keydown', newIssueEscHandler);
-
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const title = titleEl.value.trim();
-      if (!title) {
-        statusEl.textContent = 'Title is required';
-        statusEl.classList.add('is-error');
-        titleEl.focus();
-        return;
-      }
-      const data = new FormData(form);
-      const labelsRaw = (data.get('labels') || '').toString();
-      const labels = labelsRaw.split(',').map(s => s.trim()).filter(Boolean);
-      const payload = {
-        title,
-        issueType:   (data.get('issueType') || 'task').toString(),
-        priority:    parseInt(data.get('priority'), 10),
-        description: (data.get('description') || '').toString(),
-        labels,
-      };
-      submit.disabled = true;
-      statusEl.classList.remove('is-error');
-      statusEl.textContent = 'Creating…';
-
-      if (!window.__nppBridge) {
-        statusEl.textContent = 'native bridge unavailable';
-        statusEl.classList.add('is-error');
-        submit.disabled = false;
-        return;
-      }
-      const blockerEntries = blockerInput.values();   // blocking the new issue
-      const blocksEntries  = blocksInput.values();    // new issue blocks these
-      window.__nppBridge.call('createBead', payload).then(async (resp) => {
-        if (!resp.ok) {
-          statusEl.textContent = resp.error || 'create failed';
-          statusEl.classList.add('is-error');
-          submit.disabled = false;
-          return;
-        }
-        const newId = resp.bead && resp.bead.id;
-        if (!newId) {
-          showToast('issue created');
-          closeNewIssueModal();
-          return;
-        }
-        // Sequential dep writes — bd's embedded dolt backend can deadlock
-        // on concurrent writes within the same project. Each dep is:
-        //   Blocked-by chip: newId depends on chipId   (chipId blocks newId)
-        //   Blocks      chip: chipId depends on newId  (newId blocks chipId)
-        // Each chip now carries its own dep type (Phase 3.5).
-        const totalDeps = blockerEntries.length + blocksEntries.length;
-        const failed = [];
-        async function postDep(dependent, dependency, depType) {
-          try {
-            const r = await window.__nppBridge.call('depAdd', {
-              dependent, dependency, depType: depType || 'blocks',
-            });
-            if (!r.ok) failed.push(dependent + '←' + dependency +
-                                   ' (' + (r.error || 'failed') + ')');
-          } catch (e) {
-            failed.push(dependent + '←' + dependency +
-                        ' (' + ((e && e.message) || e) + ')');
-          }
-        }
-        if (totalDeps) {
-          statusEl.textContent = 'linking ' + totalDeps + ' dep' +
-                                 (totalDeps > 1 ? 's' : '') + '…';
-          for (const e of blockerEntries) await postDep(newId, e.id, e.type);
-          for (const e of blocksEntries)  await postDep(e.id, newId, e.type);
-        }
-        if (failed.length) {
-          showToast(newId + ' created; some deps failed: ' + failed.join('; '));
-        } else if (totalDeps) {
-          showToast(newId + ' created with ' + totalDeps + ' dep' +
-                    (totalDeps > 1 ? 's' : ''));
-        } else {
-          showToast(newId + ' created');
-        }
-        optimistic.set(newId, 'open');
-        closeNewIssueModal();
-      }).catch((err) => {
-        statusEl.textContent = (err && err.message) || String(err);
-        statusEl.classList.add('is-error');
-        submit.disabled = false;
-      });
-    });
-
-    // Focus the title field and let the user start typing immediately.
-    setTimeout(() => titleEl.focus(), 0);
-  }
-  function closeNewIssueModal() {
-    const overlay = document.getElementById('new-issue-overlay');
-    if (overlay) overlay.remove();
-    document.removeEventListener('keydown', newIssueEscHandler);
-  }
-  function newIssueEscHandler(e) {
-    if (e.key === 'Escape') closeNewIssueModal();
-  }
+  // ── New issue button ────────────────────────────────────────────────
+  // The modal itself moved to detail.js (App.openNewIssueModal) so the
+  // Activity view shares it. The Board pre-seeds its optimistic status
+  // override so the fresh card lands in the Open column immediately.
   (function wireNewIssueButton() {
     const btn = document.getElementById('new-issue-btn');
-    if (btn) btn.addEventListener('click', openNewIssueModal);
+    if (btn) btn.addEventListener('click', () =>
+      App.openNewIssueModal({ onCreated: (id) => optimistic.set(id, 'open') }));
   })();
 
   // ── Mode toggle wiring ──────────────────────────────────────────────
@@ -652,7 +452,7 @@
   // detail.js.
 
   App.openNewIssueWithTitle = function (title) {
-    openNewIssueModal();
+    App.openNewIssueModal({ onCreated: (id) => optimistic.set(id, 'open') });
     // Prefill on next tick — openNewIssueModal appends the template,
     // the title input is queryable immediately but we defer to be safe
     // with any Alpine/transition timing (there's no Alpine here but
