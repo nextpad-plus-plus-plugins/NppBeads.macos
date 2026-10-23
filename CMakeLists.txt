@@ -40,6 +40,7 @@ set(BEADS_CORE_SOURCES
     src/BdCommandRunner.mm
     src/BdDataSource.mm
     src/BeadsPoll.mm
+    src/BdEventsTail.mm
     src/BeadIdIndicator.mm)
 
 # ─────────────────────────────────────────────────────────────────────────

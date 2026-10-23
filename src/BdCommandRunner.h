@@ -111,6 +111,22 @@ typedef NS_ENUM(NSInteger, BdErrorKind) {
                     refresh:(BOOL)forceRefresh;
 
 // ─────────────────────────────────────────────────────────────────────
+//  Events feed (bd >= 1.3) — version gate + per-workspace journal config.
+
+/** True when the probed bd version has `bd events tail` (>= 1.3).
+    Valid only after -probeWithCompletion: has resolved. */
+- (BOOL)supportsEventsFeed;
+
+/** `bd config get events-journal` → YES iff it prints "true".
+    Completion fires on main. */
+- (void)fetchEventsJournalEnabled:(void (^)(BOOL enabled))done;
+
+/** `bd config set events-journal true` — writes the project's
+    .beads/config.yaml (which may be git-tracked; the UI warns first).
+    Completion fires on main. */
+- (void)enableEventsJournalWithCompletion:(void (^)(BdResult *res))done;
+
+// ─────────────────────────────────────────────────────────────────────
 //  Read commands — cached (750 ms list, 250 ms show).
 // ─────────────────────────────────────────────────────────────────────
 

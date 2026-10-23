@@ -492,6 +492,38 @@ static NSArray<NSString *> *collectStderrWarnings(NSString *stderrStr) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+//  Events feed (bd >= 1.3)
+// ─────────────────────────────────────────────────────────────────────
+- (BOOL)supportsEventsFeed {
+    NSString *v = self.bdVersion;
+    if (!v.length) return NO;
+    NSArray<NSString *> *parts = [v componentsSeparatedByString:@"."];
+    if (parts.count < 2) return NO;
+    NSInteger major = parts[0].integerValue;
+    NSInteger minor = parts[1].integerValue;
+    return major > 1 || (major == 1 && minor >= 3);
+}
+
+- (void)fetchEventsJournalEnabled:(void (^)(BOOL))done {
+    [self _runOnIoQueue:^{
+        BdResult *r = [self _execute:@[@"config", @"get", @"events-journal"]
+                               stdin:nil expectsJson:NO];
+        NSString *out = [r.rawStdout stringByTrimmingCharactersInSet:
+                         [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        BOOL enabled = r.ok && [out isEqualToString:@"true"];
+        dispatch_async(dispatch_get_main_queue(), ^{ if (done) done(enabled); });
+    }];
+}
+
+- (void)enableEventsJournalWithCompletion:(void (^)(BdResult *))done {
+    [self _runOnIoQueue:^{
+        BdResult *r = [self _execute:@[@"config", @"set", @"events-journal", @"true"]
+                               stdin:nil expectsJson:NO];
+        dispatch_async(dispatch_get_main_queue(), ^{ if (done) done(r); });
+    }];
+}
+
+// ─────────────────────────────────────────────────────────────────────
 //  Read commands
 // ─────────────────────────────────────────────────────────────────────
 - (void)listAllIssuesWithCompletion:(void (^)(BdResult *))done {

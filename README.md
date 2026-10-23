@@ -8,6 +8,11 @@ Works **purely from `.beads/issues.jsonl`** — no Dolt server, no `bd`
 binary required for read-mode. All viewer assets are bundled; no external
 fetches, fully offline.
 
+
+![beads-screenshot](screenshot.png) *Beads Plugin*
+
+![beads-screenshot2](screenshot-app.png) *Beads macOS App - open multiple instances to view multiple projects*
+
 ## What you get (v0.1 — Phase 1)
 
 - Auto-detects `.beads/` by walking up from the active file's directory

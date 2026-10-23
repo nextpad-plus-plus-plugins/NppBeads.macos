@@ -7,6 +7,7 @@
 #import "BdCommandRunner.h"
 #import "BdDataSource.h"
 #import "BeadsPoll.h"
+#import "BdEventsTail.h"
 
 // ─────────────────────────────────────────────────────────────────────────
 //  Small helper: escape a string for embedding inside a JS string literal.
@@ -96,6 +97,8 @@ static const CGFloat kBeadsZoomStep    = 0.10;
     BdCommandRunner          *_bdRunner;
     id<BeadsDataSource>       _activeDataSource;
     BeadsPoll                *_poll;            // active only when bd backend is active
+    BdEventsTail             *_tail;            // events-feed live sync (bd >= 1.3);
+                                                // mutually exclusive with _poll
 
     BeadsViewMode       _viewMode;
     BeadsThemePref      _themePref;
@@ -571,11 +574,14 @@ static const CGFloat kBeadsZoomStep    = 0.10;
         return;
     }
 
-    // Tear down any previous-project live-sync poll BEFORE changing state.
+    // Tear down any previous-project live-sync BEFORE changing state.
     // BeadsPoll's -stop bumps its generation counter so any in-flight bd
-    // completion for the old project becomes a no-op.
+    // completion for the old project becomes a no-op; the events tail
+    // terminates its child process.
     [_poll stop];
     _poll = nil;
+    [_tail stop];
+    _tail = nil;
 
     self.project = project;
     [_ds bindToPath:project.jsonlPath];
@@ -611,25 +617,11 @@ static const CGFloat kBeadsZoomStep    = 0.10;
                 s->_activeDataSource = [[BdDataSource alloc] initWithRunner:probedRunner];
                 NSLog(@"[NppBeads] bd backend active — %@",
                       s->_activeDataSource.backendLabel);
-                // Phase 4: live-sync poll — 2s bd list hash-diff. Pauses
-                // whenever the host window isn't key (see
-                // _installWindowKeyStateObservers), so idle background
-                // NPPs don't spin bd.
-                s->_poll = [[BeadsPoll alloc] initWithRunner:probedRunner
-                                                  intervalMs:2000];
-                __weak typeof(s) weakS = s;
-                s->_poll.onChange = ^(NSString *payload) {
-                    __strong typeof(s) ss = weakS;
-                    if (!ss) return;
-                    NSLog(@"[NppBeads] poll detected change (#%lu) — rebroadcasting",
-                          (unsigned long)ss->_poll.changeCount);
-                    [ss _broadcastDataChanged];
-                };
-                [s->_poll start];
-                // If the host window isn't key right now, pause immediately
-                // to match the focus invariant. resume() fires on
-                // NSWindowDidBecomeKeyNotification.
-                if (s.window && !s.window.isKeyWindow) [s->_poll pause];
+                // Live sync: events feed on bd >= 1.3 (with a one-time
+                // per-project opt-in prompt for the journal), else the
+                // classic 2s poll. Either one pauses whenever the host
+                // window isn't key (see _installWindowKeyStateObservers).
+                [s _startLiveSyncWithRunner:probedRunner];
             } else {
                 NSLog(@"[NppBeads] JSONL fallback (bd=%d, projectReady=%d)",
                       bdPresent, projectReady);
@@ -741,11 +733,149 @@ static const CGFloat kBeadsZoomStep    = 0.10;
                      inFileViewerRootedAtPath:self.project.beadsDir];
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+//  Live sync — events feed (bd >= 1.3, opt-in journal) with poll fallback
+// ─────────────────────────────────────────────────────────────────────────
+
+// Per-project "did we already ask?" answers ("enabled"/"declined") and
+// per-project journal checkpoints, both keyed by standardized project root.
+static NSString * const kEventsPromptAnswersKey = @"NppBeadsEventsFeedAnswers";
+static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
+
+- (void)_startLiveSyncWithRunner:(BdCommandRunner *)runner {
+    if (![runner supportsEventsFeed] || runner.bdPath.length == 0) {
+        [self _startPollWithRunner:runner];
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    [runner fetchEventsJournalEnabled:^(BOOL enabled) {
+        __strong typeof(self) s = weakSelf;
+        if (!s || s->_bdRunner != runner) return;   // superseded by later bind
+        if (enabled) [s _startTailWithRunner:runner];
+        else         [s _offerEventsFeedForRunner:runner];
+    }];
+}
+
+- (void)_startPollWithRunner:(BdCommandRunner *)runner {
+    [_poll stop];
+    _poll = [[BeadsPoll alloc] initWithRunner:runner intervalMs:2000];
+    __weak typeof(self) weakSelf = self;
+    _poll.onChange = ^(NSString *payload) {
+        __strong typeof(self) ss = weakSelf;
+        if (!ss) return;
+        NSLog(@"[NppBeads] poll detected change (#%lu) — rebroadcasting",
+              (unsigned long)ss->_poll.changeCount);
+        [ss _broadcastDataChanged];
+    };
+    [_poll start];
+    // Match the focus invariant immediately; resume() fires on
+    // NSWindowDidBecomeKeyNotification.
+    if (self.window && !self.window.isKeyWindow) [_poll pause];
+    NSLog(@"[NppBeads] live sync: 2s poll (bd %@)", runner.bdVersion ?: @"?");
+}
+
+- (void)_startTailWithRunner:(BdCommandRunner *)runner {
+    [_tail stop];
+    _tail = nil;
+    NSString *seqKey = [kEventsSeqKeyPrefix stringByAppendingString:
+                        runner.projectDir.stringByStandardizingPath];
+    NSNumber *saved = [[NSUserDefaults standardUserDefaults] objectForKey:seqKey];
+    BdEventsTail *tail = [[BdEventsTail alloc] initWithBdPath:runner.bdPath
+                                                   projectDir:runner.projectDir];
+    tail.sinceSeq = [saved isKindOfClass:[NSNumber class]]
+                        ? saved.unsignedLongLongValue : 0;
+    __weak typeof(self) weakSelf = self;
+    tail.onChange = ^{
+        __strong typeof(self) s = weakSelf;
+        if (!s || s->_bdRunner != runner || !s->_tail) return;
+        [[NSUserDefaults standardUserDefaults] setObject:@(s->_tail.lastSeq)
+                                                  forKey:seqKey];
+        NSLog(@"[NppBeads] events feed change (records=%lu seq=%llu) — rebroadcasting",
+              (unsigned long)s->_tail.recordCount, s->_tail.lastSeq);
+        [s _broadcastDataChanged];
+    };
+    tail.onBroken = ^(NSString *reason) {
+        __strong typeof(self) s = weakSelf;
+        if (!s || s->_bdRunner != runner) return;
+        NSLog(@"[NppBeads] events feed broken (%@) — falling back to 2s poll", reason);
+        s->_tail = nil;
+        [s _startPollWithRunner:runner];
+        [s _broadcastDataChanged];      // resync once; we may have missed changes
+    };
+    _tail = tail;
+    [tail start];
+    if (self.window && !self.window.isKeyWindow) [tail pause];
+    NSLog(@"[NppBeads] live sync: events feed (bd %@, since=%llu)",
+          runner.bdVersion ?: @"?", tail.sinceSeq);
+}
+
+// Option (a): one-time per-project prompt before flipping the journal on,
+// because `bd config set events-journal true` writes .beads/config.yaml,
+// which is often tracked in git. Any remembered answer suppresses the
+// prompt forever; a user who later runs the config command themselves is
+// picked up by the `fetchEventsJournalEnabled` check on the next bind.
+- (void)_offerEventsFeedForRunner:(BdCommandRunner *)runner {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSString *root = runner.projectDir.stringByStandardizingPath;
+    NSDictionary *answers = [ud dictionaryForKey:kEventsPromptAnswersKey] ?: @{};
+    if ([answers[root] isKindOfClass:[NSString class]]) {
+        // Already asked (or previously enabled and since turned off
+        // outside the panel) — don't nag; poll.
+        [self _startPollWithRunner:runner];
+        return;
+    }
+    NSWindow *win = self.window;
+    if (!win) {
+        // No UI to ask with right now. Poll for this session WITHOUT
+        // recording an answer, so the prompt can happen on a later bind.
+        [self _startPollWithRunner:runner];
+        return;
+    }
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Enable live updates for this project?";
+    alert.informativeText = [NSString stringWithFormat:
+        @"Beads %@ can stream changes to this panel as they happen "
+        @"(bd events journal) instead of polling every 2 seconds.\n\n"
+        @"Enabling writes \"events-journal: true\" into this project's "
+        @".beads/config.yaml — note that file may be tracked in git.\n\n"
+        @"You can also enable it later yourself:\n"
+        @"bd config set events-journal true",
+        runner.bdVersion ?: @"1.3"];
+    [alert addButtonWithTitle:@"Enable Live Updates"];
+    [alert addButtonWithTitle:@"Not Now"];
+    __weak typeof(self) weakSelf = self;
+    [alert beginSheetModalForWindow:win completionHandler:^(NSModalResponse resp) {
+        __strong typeof(self) s = weakSelf;
+        if (!s || s->_bdRunner != runner) return;
+        NSMutableDictionary *a =
+            [([ud dictionaryForKey:kEventsPromptAnswersKey] ?: @{}) mutableCopy];
+        if (resp == NSAlertFirstButtonReturn) {
+            a[root] = @"enabled";
+            [ud setObject:a forKey:kEventsPromptAnswersKey];
+            [runner enableEventsJournalWithCompletion:^(BdResult *r) {
+                __strong typeof(self) s2 = weakSelf;
+                if (!s2 || s2->_bdRunner != runner) return;
+                if (r.ok) {
+                    [s2 _startTailWithRunner:runner];
+                } else {
+                    NSLog(@"[NppBeads] enabling events journal failed: %@ — polling",
+                          r.errorMessage);
+                    [s2 _startPollWithRunner:runner];
+                }
+            }];
+        } else {
+            a[root] = @"declined";
+            [ud setObject:a forKey:kEventsPromptAnswersKey];
+            [s _startPollWithRunner:runner];
+        }
+    }];
+}
+
 - (void)_didTapRefresh:(id)sender {
     [self reloadData];
     // Re-baseline the poll so its next natural tick compares against
     // post-refresh state (prevents a ghost "changed" fire right after the
-    // user hit Refresh).
+    // user hit Refresh). No-op in events-feed mode (_poll is nil there).
     [_poll kick];
 }
 
@@ -1051,7 +1181,13 @@ static const CGFloat kBeadsZoomStep    = 0.10;
         [s appendFormat:@"_loadViewer calls: %lu\n", (unsigned long)self_->_loadCount];
         [s appendFormat:@"reloadData calls: %lu\n",  (unsigned long)self_->_reloadDataCount];
         [s appendFormat:@"watcher fires: %lu\n",    (unsigned long)self_->_watcherFireCount];
-        if (self_->_poll) {
+        if (self_->_tail) {
+            [s appendFormat:@"events feed: records=%lu lastSeq=%llu running=%@ paused=%@\n",
+                (unsigned long)self_->_tail.recordCount,
+                self_->_tail.lastSeq,
+                self_->_tail.isRunning ? @"YES" : @"NO",
+                self_->_tail.isPaused  ? @"YES" : @"NO"];
+        } else if (self_->_poll) {
             [s appendFormat:@"poll: ticks=%lu changes=%lu skips(inflight)=%lu paused=%@\n",
                 (unsigned long)self_->_poll.tickCount,
                 (unsigned long)self_->_poll.changeCount,
@@ -1970,6 +2106,8 @@ static const CGFloat kBeadsZoomStep    = 0.10;
 - (void)dealloc {
     [_poll stop];
     _poll = nil;
+    [_tail stop];
+    _tail = nil;
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     @try { [_webView removeObserver:self forKeyPath:@"URL"]; }
     @catch (NSException *e) { /* not added */ }
@@ -2006,8 +2144,9 @@ static const CGFloat kBeadsZoomStep    = 0.10;
     NSWindow *w = self.window;
     if (!w) {
         // Moved out of any window (panel torn down / pre-init). Pause
-        // the poll defensively — nothing to display on anyway.
+        // live sync defensively — nothing to display on anyway.
         [_poll pause];
+        [_tail pause];
         return;
     }
 
@@ -2018,12 +2157,13 @@ static const CGFloat kBeadsZoomStep    = 0.10;
 
     // Snapshot current state so we match reality (e.g. panel attached
     // to a non-key window during a dock restore).
-    if (w.isKeyWindow) [_poll resume];
-    else               [_poll pause];
+    if (w.isKeyWindow) { [_poll resume]; [_tail resume]; }
+    else               { [_poll pause];  [_tail pause];  }
 }
 
 - (void)_hostWindowBecameKey:(NSNotification *)note {
     [_poll resume];
+    [_tail resume];   // flushes any change that arrived while blurred
     // Phase 6 — user is back; recompute the "N new" badge against any
     // JSONL that landed while the panel was blurred.
     [self _refreshStatusBar];
@@ -2031,6 +2171,7 @@ static const CGFloat kBeadsZoomStep    = 0.10;
 
 - (void)_hostWindowResignedKey:(NSNotification *)note {
     [_poll pause];
+    [_tail pause];
 }
 
 // Called by NppBeads.mm every time the user shows the panel. Resets
