@@ -615,7 +615,10 @@ static NSArray<NSString *> *collectStderrWarnings(NSString *stderrStr) {
         if ([description containsString:@"\n"] ||
             [description rangeOfCharacterFromSet:
              [NSCharacterSet characterSetWithCharactersInString:@"\"$`\\"]].location != NSNotFound) {
-            [args addObject:@"--description-file=-"];
+            // `--body-file -` reads the description from stdin and exists on
+            // both bd 1.0.x and 1.3.x; the old `--description-file` spelling
+            // was removed in bd 1.3 ("unknown flag").
+            [args addObject:@"--body-file=-"];
             stdinText = description;
         } else {
             [args addObject:@"--description"]; [args addObject:description];
@@ -770,8 +773,16 @@ static NSArray<NSString *> *collectStderrWarnings(NSString *stderrStr) {
         return;
     }
     [self _runOnIoQueue:^{
+        // bd 1.0.x: `bd update <id> --unassign`. bd 1.3 removed --unassign;
+        // there `bd assign <id> ""` clears the assignee (on 1.0.x an empty
+        // --assignee means "no change", so the flag must stay the first
+        // choice). Try the old form, fall back on "unknown flag".
         BdResult *r = [self _execute:@[@"update", issueId, @"--unassign", @"--json"]
                                 stdin:nil];
+        if (!r.ok && [r.errorMessage rangeOfString:@"unknown flag"
+                                           options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            r = [self _execute:@[@"assign", issueId, @"", @"--json"] stdin:nil];
+        }
         // bd update returns an array — unwrap for UI clarity.
         if (r.ok && [r.json isKindOfClass:[NSArray class]]) {
             NSArray *a = (NSArray *)r.json;
