@@ -542,6 +542,24 @@ extern "C" NPP_EXPORT void beNotified(SCNotification *n) {
         case NPPN_READY:
             // Defer panel construction until the user asks for it; but if
             // we were asked to auto-show in the future, this is where.
+            //
+            // Resolve the bead-id indicator slot. Hosts with the remapped
+            // Windows-parity ID layout answer NPPM_GETBOOKMARKID == 20 and
+            // own slot 25 (Mark style 1), so ask NPPM_ALLOCATEINDICATOR for
+            // a collision-free slot there. Legacy hosts answer 24 — keep the
+            // shipped default 25, which is free on them (and their allocator
+            // range 9-19 overlaps host indicators, so allocating would be
+            // WORSE). If the new host's pool is exhausted, fall back to 27,
+            // the one slot unowned in the remapped layout.
+            if (sIndicator && npp(NPPM_GETBOOKMARKID) == 20) {
+                int slot = -1;
+                if (npp(NPPM_ALLOCATEINDICATOR, 1, (intptr_t)&slot) && slot > 0)
+                    sIndicator.indicatorSlot = slot;
+                else
+                    sIndicator.indicatorSlot = 27;
+                NSLog(@"[NppBeads] remapped ID layout detected — bead indicator slot %d",
+                      sIndicator.indicatorSlot);
+            }
             break;
         case NPPN_BUFFERACTIVATED:
         case NPPN_FILEOPENED:

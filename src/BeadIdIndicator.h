@@ -45,6 +45,13 @@ typedef intptr_t (*BeadIdSendMessageFn)(uintptr_t handle, uint32_t msg,
     already hides them; clearing would race with the host rerouting. */
 @property (nonatomic, assign) uintptr_t scintillaHandle;
 
+/** Scintilla indicator slot to paint on. Defaults to 25, which is free on
+    legacy hosts (NPPM_GETBOOKMARKID == 24). On hosts with the remapped
+    Windows-parity ID layout (NPPM_GETBOOKMARKID == 20) slot 25 is the host's
+    Mark-style-1 indicator, so NppBeads.mm resolves a slot from
+    NPPM_ALLOCATEINDICATOR at NPPN_READY and sets it here before any paint. */
+@property (nonatomic, assign) int indicatorSlot;
+
 - (instancetype)initWithSendMessage:(BeadIdSendMessageFn)send NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 

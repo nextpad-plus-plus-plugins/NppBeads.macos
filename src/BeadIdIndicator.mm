@@ -15,21 +15,22 @@
 #define SCI_GETLINECOUNT        2154
 #define SCI_POSITIONFROMLINE    2167
 #define SCI_SETSEARCHFLAGS      2198
-#define SCI_SETTARGETRANGE      2643
-#define SCI_GETTARGETSTART      2644   // after search: start of match (byte)
-#define SCI_GETTARGETEND        2645   // end (byte, exclusive)
+#define SCI_SETTARGETRANGE      2686
+#define SCI_GETTARGETSTART      2191   // after search: start of match (byte)
+#define SCI_GETTARGETEND        2193   // end (byte, exclusive)
 #define SCI_SEARCHINTARGET      2197
 #define SCI_DOCLINEFROMVISIBLE  2221
 
 #define INDIC_TEXTFORE          17
 #define SCFIND_REGEXP           0x00200000
-#define SCFIND_CXX11REGEX       0x00400000
+#define SCFIND_CXX11REGEX       0x00800000
 
-// Indicator slot. Host uses 9-13 (Mark styles) and 28 (inc-search).
-// 25 is clear across everything we've surveyed. Plugin convention tends
-// to use 20-30. If a future conflict surfaces, change this constant and
-// re-test — the paint/clear path is the only thing it touches.
-static const int kBeadIndicator = 25;
+// Default indicator slot for LEGACY hosts (NPPM_GETBOOKMARKID == 24), where
+// the host paints Mark styles on 9-13 and inc-search on 28, and 25 is free.
+// Hosts with the remapped Windows-parity layout (NPPM_GETBOOKMARKID == 20)
+// own 25 as Mark style 1; there NppBeads.mm overrides `indicatorSlot` with a
+// slot from NPPM_ALLOCATEINDICATOR at NPPN_READY, before any paint.
+static const int kBeadIndicatorLegacy = 25;
 
 // Link-style color for matched bead ids. Scintilla color format is
 // 0x00BBGGRR (no alpha). #2563eb (Tailwind blue-600) → BGR 0xEB6325.
@@ -52,8 +53,15 @@ static const int kBeadLinkColor = 0xEB6325;
         _send  = send;
         _prefix = @"bd-";
         _cache = @[];
+        _indicatorSlot = kBeadIndicatorLegacy;
     }
     return self;
+}
+
+- (void)setIndicatorSlot:(int)slot {
+    if (_indicatorSlot == slot) return;
+    _indicatorSlot = slot;
+    _stylesInstalled = NO;   // style the new slot on next paint
 }
 
 - (void)setPrefix:(NSString *)prefix {
@@ -145,7 +153,7 @@ static const int kBeadLinkColor = 0xEB6325;
     // stale matches (e.g. user deleted a bead id) disappear. Clearing
     // OUTSIDE the window is intentionally skipped to keep the indicator
     // persistent across scrolls (no flicker).
-    _send(h, SCI_SETINDICATORCURRENT, (uintptr_t)kBeadIndicator, 0);
+    _send(h, SCI_SETINDICATORCURRENT, (uintptr_t)_indicatorSlot, 0);
     _send(h, SCI_INDICATORCLEARRANGE, (uintptr_t)startByte,
           (intptr_t)(endByte - startByte));
 
@@ -205,7 +213,7 @@ static const int kBeadLinkColor = 0xEB6325;
     uintptr_t h = _scintillaHandle;
     [self _installStylesIfNeeded];
     intptr_t len = _send(h, SCI_GETLENGTH, 0, 0);
-    _send(h, SCI_SETINDICATORCURRENT, (uintptr_t)kBeadIndicator, 0);
+    _send(h, SCI_SETINDICATORCURRENT, (uintptr_t)_indicatorSlot, 0);
     _send(h, SCI_INDICATORCLEARRANGE, 0, len);
     _cache = @[];
 }
@@ -236,8 +244,8 @@ static const int kBeadLinkColor = 0xEB6325;
 - (void)_installStylesIfNeeded {
     if (_stylesInstalled || _scintillaHandle == 0) return;
     uintptr_t h = _scintillaHandle;
-    _send(h, SCI_INDICSETSTYLE, (uintptr_t)kBeadIndicator, INDIC_TEXTFORE);
-    _send(h, SCI_INDICSETFORE,  (uintptr_t)kBeadIndicator, (intptr_t)kBeadLinkColor);
+    _send(h, SCI_INDICSETSTYLE, (uintptr_t)_indicatorSlot, INDIC_TEXTFORE);
+    _send(h, SCI_INDICSETFORE,  (uintptr_t)_indicatorSlot, (intptr_t)kBeadLinkColor);
     _stylesInstalled = YES;
 }
 
