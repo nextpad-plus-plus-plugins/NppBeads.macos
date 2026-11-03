@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Beads — Activity</title>
   <link rel="stylesheet" href="app.css">
+  <link rel="stylesheet" href="../facets.css">
 </head>
 <body>
   <div id="activity-hdr" class="activity-hdr">
@@ -12,7 +13,7 @@
       <span class="activity-title">Recent activity</span>
       <span id="activity-summary" class="activity-summary"></span>
     </div>
-    <div id="activity-controls" class="activity-controls"></div>
+    <div id="activity-controls" class="activity-controls npp-facets"></div>
   </div>
   <div id="activity-list" class="activity-list"></div>
   <!-- Shared autocomplete pool for the detail-modal dep editor
@@ -25,6 +26,7 @@
   <script src="../vendor/dompurify.min.js"></script>
   <script src="app.js"></script>
   <script src="detail.js"></script>
+  <script src="../facets.js"></script>
   <script src="activity.js"></script>
 </body>
 </html>

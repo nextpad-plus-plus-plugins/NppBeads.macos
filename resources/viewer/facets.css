@@ -1,0 +1,116 @@
+/* Facet filter controls shared by the Activity and Graph views (facets.js).
+   Self-contained palette (the Graph page has no app.css variables); values
+   match app.css so both views render the controls identically. The theme
+   follows [data-theme] on <html>, which the native panel sets on every
+   page, with the Rich viewer's `dark` class as the pre-push fallback. */
+
+.npp-facets {
+  --nf-bg:        #f8fafc;
+  --nf-elev:      #ffffff;
+  --nf-border:    #e2e8f0;
+  --nf-text:      #0f172a;
+  --nf-muted:     #475569;
+  --nf-accent:    #0ea5e9;
+  --nf-accent-fg: #ffffff;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px 8px;
+  font: 12px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text",
+        "Helvetica Neue", sans-serif;
+}
+[data-theme="dark"] .npp-facets,
+html.dark:not([data-theme="light"]) .npp-facets {
+  --nf-bg:        #0f172a;
+  --nf-elev:      #1e293b;
+  --nf-border:    #334155;
+  --nf-text:      #e2e8f0;
+  --nf-muted:     #94a3b8;
+  --nf-accent:    #38bdf8;
+  --nf-accent-fg: #0c1222;
+}
+.npp-facets .filter { position: relative; display: inline-flex; }
+.npp-facets .filter-btn {
+  appearance: none;
+  border: 1px solid var(--nf-border);
+  background: var(--nf-elev);
+  color: var(--nf-text);
+  padding: 3px 9px;
+  font: inherit;
+  font-size: 11px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+.npp-facets .filter-btn:hover { background: var(--nf-bg); }
+.npp-facets .filter.is-open .filter-btn,
+.npp-facets .filter-btn.is-active {
+  border-color: var(--nf-accent);
+  color: var(--nf-accent);
+}
+.npp-facets .filter-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 50;
+  min-width: 150px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--nf-elev);
+  border: 1px solid var(--nf-border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+.npp-facets .filter-menu[hidden] { display: none; }
+/* Long labels (Epic: "id · title") — cap the width, ellipsize the title. */
+.npp-facets .filter-menu.is-wide { max-width: 380px; }
+.npp-facets .filter-menu.is-wide .filter-opt-label { min-width: 0; }
+.npp-facets .filter-opt {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--nf-text);
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.npp-facets .filter-opt:hover { background: var(--nf-bg); }
+.npp-facets .filter-opt input { margin: 0; cursor: pointer; }
+.npp-facets .filter-opt-label { overflow: hidden; text-overflow: ellipsis; }
+.npp-facets .filter-all {
+  border-bottom: 1px solid var(--nf-border);
+  border-radius: 0;
+  margin-bottom: 2px;
+  font-weight: 600;
+  color: var(--nf-muted);
+}
+/* Blocked / Blocking segmented filters — same footprint as .filter-btn. */
+.npp-facets .seg {
+  display: inline-flex;
+  border: 1px solid var(--nf-border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--nf-elev);
+}
+.npp-facets .seg-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--nf-muted);
+  padding: 3px 8px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.npp-facets .seg-btn + .seg-btn { border-left: 1px solid var(--nf-border); }
+.npp-facets .seg-btn:hover { background: var(--nf-bg); color: var(--nf-text); }
+.npp-facets .seg-btn.is-active {
+  background: var(--nf-accent);
+  color: var(--nf-accent-fg);
+}

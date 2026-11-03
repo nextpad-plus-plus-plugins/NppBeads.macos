@@ -86,6 +86,16 @@
     const hdr = el('div', { class: 'modal-hdr' });
     hdr.appendChild(el('span', { class: 'modal-type' }, App.typeIcon(b.type)));
     hdr.appendChild(el('span', { class: 'modal-id' }, b.id));
+    const st = App.statusColor(b.status);
+    hdr.appendChild(el('span', {
+      class: 'pill modal-pill',
+      style: 'background:' + st.bg + ';color:' + st.fg,
+    }, st.label));
+    const pr = App.priorityBadge(b.priority);
+    if (pr) hdr.appendChild(el('span', {
+      class: 'pill modal-pill',
+      style: 'background:' + pr.color + ';color:#fff',
+    }, pr.label));
     const closeBtn = el('button', {
       class: 'modal-close',
       'aria-label': 'Close',
@@ -115,6 +125,8 @@
       ['blocked',     'Blocked'],
       ['deferred',    'Deferred'],
       ['closed',      'Closed'],
+      ['pinned',      'Pinned'],
+      ['hooked',      'Hooked'],
     ], b.status);
     const prioSel = makeSelect('priority', [
       ['0', 'P0 — critical'],
@@ -156,6 +168,9 @@
     body.appendChild(mdField('Description', descInput, {
       initial: descInput.value.trim() ? 'markdown' : 'raw',
     }));
+
+    body.appendChild(buildMetrics(b.id));
+    if (b.status !== 'closed') body.appendChild(buildWhatIf(b.id));
 
     // Dependencies — editable in Phase 3.5. We keep a persistent
     // container and re-render it after every dep op so the modal
@@ -329,6 +344,101 @@
     // Esc to close. Autofocus title — typical for a detail-edit flow.
     document.addEventListener('keydown', escCloser);
     setTimeout(() => { titleInput.focus(); titleInput.select(); }, 0);
+  }
+
+  // Graph metrics cards. Values arrive asynchronously (the WASM engine
+  // loads on first use), so the cards render with a placeholder and fill
+  // in when App.ensureGraphMetrics() resolves.
+  function buildMetrics(beadId) {
+    const cards = [
+      ['pagerank',      'PageRank',       'metric-pagerank',    v => v.toFixed(4)],
+      ['betweenness',   'Betweenness',    'metric-betweenness', v => v.toFixed(4)],
+      ['criticalDepth', 'Critical depth', 'metric-depth',       v => String(Math.round(v))],
+    ];
+    const grid = el('div', { class: 'metric-grid' });
+    const values = {};
+    for (const [key, label, cls] of cards) {
+      values[key] = el('span', { class: 'metric-val' }, '…');
+      grid.appendChild(el('div', { class: 'metric-card ' + cls },
+        el('span', { class: 'metric-label' }, label), values[key]));
+    }
+    const section = el('div', { class: 'modal-metrics' },
+      el('h4', { class: 'modal-metrics-hdr' }, 'Graph metrics'), grid);
+    App.ensureGraphMetrics().then((metrics) => {
+      const m = metrics && metrics.get(beadId);
+      for (const [key, , , fmt] of cards) {
+        const v = m ? m[key] : null;
+        values[key].textContent = (typeof v === 'number' && isFinite(v)) ? fmt(v) : '—';
+      }
+    });
+    return section;
+  }
+
+  // What-if — "Simulate close" shows what finishing this issue would free
+  // up (App.whatIfClose), computed on click from the current data. Explains
+  // a zero by naming the waiting issues and what else blocks them.
+  function buildWhatIf(beadId) {
+    const results = el('div', { class: 'whatif-results', hidden: '' });
+    const btn = el('button', {
+      type: 'button', class: 'btn whatif-btn', 'aria-expanded': 'false',
+    }, 'Simulate close');
+    btn.addEventListener('click', () => {
+      const open = results.hidden;
+      results.replaceChildren();
+      if (open) renderWhatIf(results, beadId);
+      results.hidden = !open;
+      btn.textContent = open ? 'Hide' : 'Simulate close';
+      btn.setAttribute('aria-expanded', String(open));
+      if (open) results.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
+    return el('div', { class: 'modal-whatif' },
+      el('div', { class: 'modal-whatif-top' },
+        el('h4', { class: 'modal-whatif-hdr' }, 'What-if analysis'),
+        btn),
+      results);
+  }
+
+  function renderWhatIf(section, beadId) {
+    const w = App.whatIfClose(beadId);
+    const link = (id) => el('a', {
+      class: 'whatif-chip', href: '#', title: (findBead(id) || {}).title || id,
+      onclick: (e) => { e.preventDefault(); openBeadModal(id); },
+    }, id);
+    const plural = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
+
+    if (w.direct.length) {
+      section.appendChild(el('p', { class: 'whatif-line' },
+        'Closing this unblocks ', el('strong', null, plural(w.direct.length, 'issue')), ':'));
+      section.appendChild(el('div', { class: 'whatif-chips' }, ...w.direct.map(link)));
+      const further = w.cascade.filter(id => w.direct.indexOf(id) === -1);
+      if (further.length) {
+        section.appendChild(el('p', { class: 'whatif-line' },
+          '…and ', el('strong', null, String(further.length)),
+          ' more down the chain once those are done:'));
+        section.appendChild(el('div', { class: 'whatif-chips' }, ...further.map(link)));
+      }
+    } else if (!w.waiting.length) {
+      section.appendChild(el('p', { class: 'whatif-line whatif-none' },
+        'No open issues are waiting on this one.'));
+    } else {
+      section.appendChild(el('p', { class: 'whatif-line whatif-none' },
+        'Closing this unblocks nothing yet.'));
+    }
+    if (w.waiting.length) {
+      section.appendChild(el('p', { class: 'whatif-line' }, 'Still blocked after closing:'));
+      const list = el('div', { class: 'whatif-waiting' });
+      for (const x of w.waiting) {
+        list.appendChild(el('div', { class: 'whatif-wait-row' },
+          link(x.id),
+          el('span', { class: 'whatif-wait-why' },
+            'waits on ' + plural(x.others.length, 'other open issue')),
+          ...x.others.slice(0, 4).map(link),
+          x.others.length > 4 ? el('span', { class: 'whatif-wait-why' },
+            '+' + (x.others.length - 4) + ' more') : null));
+      }
+      section.appendChild(list);
+    }
+    return section;
   }
 
   // ── Helpers for the edit modal ──────────────────────────────────────
@@ -565,19 +675,12 @@
     const statusLine = el('span', { class: 'form-status dep-status-line' });
     container.appendChild(statusLine);
 
-    // Partition existing deps by direction.
-    const blockedBy = [];  // this issue depends on these
-    const blocks    = [];  // these issues depend on this issue
-    for (const d of (b.deps || [])) {
-      const row = {
-        id:    d.depends_on_id || d.issue_id,
-        type:  d.type || 'blocks',
-        dependent:  d.issue_id,
-        dependency: d.depends_on_id,
-      };
-      if (d.issue_id === b.id)      blockedBy.push(row);
-      else if (d.depends_on_id === b.id) blocks.push(row);
-    }
+    // Both directions come from the index over ALL beads: an edge is
+    // stored only on the dependent's record, so b.deps alone misses
+    // every issue that depends on this one.
+    const deps = App.depsOf(b.id);
+    const blockedBy = deps.up;    // this issue depends on these
+    const blocks    = deps.down;  // these issues depend on this issue
 
     // Direction: "upstream" means new chips become our blockers
     //            (depAdd where dependent=us, dependency=chip)

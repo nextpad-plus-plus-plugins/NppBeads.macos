@@ -27,121 +27,20 @@
   const ROW_CAP = 200;   // render cap — agents can create 10k+ beads
 
   // ── View-local facet filters + expand/collapse-all ──────────────────
-  // These live only in this view (the search box drives App.filter.query
-  // separately). A bead must pass ALL active facets AND the search query
-  // to be shown. An empty facet set means "all".
-  const typeFilter   = new Set();
-  const prioFilter   = new Set();
-  const statusFilter = new Set();
-
-  const TYPE_ORDER   = ['epic', 'feature', 'task', 'bug', 'chore', 'decision'];
-  const STATUS_ORDER = ['open', 'in_progress', 'blocked', 'deferred', 'closed'];
-  const PRIO_ORDER   = ['0', '1', '2', '3', '4'];
+  // The facets (../facets.js) live only in this view (the search box
+  // drives App.filter.query separately). A bead must pass ALL active
+  // facets AND the search query to be shown.
+  let facets = null;
 
   let expandAllBox = null;   // the master expand/collapse checkbox
   let shownGroups  = [];     // {id, collapsed} for each group in the last render
 
   function filtersActive() {
     const q = (App.filter && App.filter.query) ? App.filter.query : '';
-    return !!q || typeFilter.size > 0 || prioFilter.size > 0 || statusFilter.size > 0;
+    return !!q || (!!facets && facets.active());
   }
   function passesFacets(b) {
-    if (typeFilter.size && !typeFilter.has(b.type || 'task')) return false;
-    if (prioFilter.size && (b.priority == null || !prioFilter.has(String(b.priority)))) return false;
-    if (statusFilter.size && !statusFilter.has(b.status || '')) return false;
-    return true;
-  }
-
-  // Distinct facet values actually present in the data, in canonical
-  // order (unknown values appended alphabetically) — so each menu lists
-  // exactly the types/priorities/statuses this project uses.
-  function presentValues(kind) {
-    const present = new Set();
-    for (const b of (App.beads || [])) {
-      if (kind === 'types')      present.add(b.type || 'task');
-      else if (kind === 'prios') { if (b.priority != null) present.add(String(b.priority)); }
-      else if (kind === 'stats') { if (b.status) present.add(b.status); }
-    }
-    const order = kind === 'types' ? TYPE_ORDER : kind === 'prios' ? PRIO_ORDER : STATUS_ORDER;
-    const inOrder = order.filter(v => present.has(v));
-    const extras  = [...present].filter(v => order.indexOf(v) === -1).sort();
-    return inOrder.concat(extras);
-  }
-
-  function closeAllMenus() {
-    if (!ctrlEl) return;
-    for (const m of ctrlEl.querySelectorAll('.filter-menu')) m.hidden = true;
-    for (const f of ctrlEl.querySelectorAll('.filter.is-open')) f.classList.remove('is-open');
-  }
-
-  // One facet dropdown: a button + a checkbox menu populated on open
-  // (so it reflects the current data and filter state each time).
-  function buildFilter(name, set, kind, labelFn) {
-    const wrap = document.createElement('div');
-    wrap.className = 'filter';
-
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'filter-btn';
-    function syncBtn() {
-      btn.textContent = name + (set.size ? ' (' + set.size + ')' : '') + ' ▾';
-      btn.classList.toggle('is-active', set.size > 0);
-    }
-    syncBtn();
-
-    const menu = document.createElement('div');
-    menu.className = 'filter-menu';
-    menu.hidden = true;
-    menu.addEventListener('click', (e) => e.stopPropagation());
-
-    function populate() {
-      menu.innerHTML = '';
-      const allRow = document.createElement('label');
-      allRow.className = 'filter-opt filter-all';
-      const allCb = document.createElement('input');
-      allCb.type = 'checkbox';
-      allCb.checked = set.size === 0;
-      allCb.addEventListener('change', () => {
-        set.clear();
-        syncBtn();
-        populate();
-        render();
-      });
-      allRow.appendChild(allCb);
-      allRow.appendChild(document.createTextNode('All'));
-      menu.appendChild(allRow);
-
-      for (const v of presentValues(kind)) {
-        const row = document.createElement('label');
-        row.className = 'filter-opt';
-        const cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.checked = set.has(v);
-        cb.addEventListener('change', () => {
-          if (cb.checked) set.add(v); else set.delete(v);
-          allCb.checked = set.size === 0;
-          syncBtn();
-          render();
-        });
-        const lab = document.createElement('span');
-        lab.className = 'filter-opt-label';
-        lab.textContent = labelFn(v);
-        row.appendChild(cb);
-        row.appendChild(lab);
-        menu.appendChild(row);
-      }
-    }
-
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const willOpen = menu.hidden;
-      closeAllMenus();
-      if (willOpen) { populate(); menu.hidden = false; wrap.classList.add('is-open'); }
-    });
-
-    wrap.appendChild(btn);
-    wrap.appendChild(menu);
-    return wrap;
+    return !facets || facets.passes(b);
   }
 
   function onExpandAll() {
@@ -182,12 +81,21 @@
     expandLbl.appendChild(document.createTextNode('Expand all'));
     ctrlEl.appendChild(expandLbl);
 
-    ctrlEl.appendChild(buildFilter('Type',     typeFilter,   'types',
-      (v) => App.typeIcon(v) + ' ' + v));
-    ctrlEl.appendChild(buildFilter('Priority', prioFilter,   'prios',
-      (v) => 'P' + v));
-    ctrlEl.appendChild(buildFilter('Status',   statusFilter, 'stats',
-      (v) => App.statusColor(v).label));
+    facets = NppFacets.create({
+      container:     ctrlEl,
+      beads:         () => App.beads,
+      typeOf:        (b) => b.type,
+      priorityOf:    (b) => b.priority,
+      statusOf:      (b) => b.status,
+      assigneeOf:    (b) => b.assignedTo,
+      blockingState: (b) => {
+        const s = App.blockingState(b.id);
+        return { blockers: s.openBlockers.length, blocking: s.openBlocking.length };
+      },
+      typeLabel:     (v) => App.typeIcon(v) + ' ' + v,
+      statusLabel:   (v) => App.statusColor(v).label,
+      onChange:      render,
+    });
 
     // Rightmost: same New-issue entry point as the Board (shared modal
     // in detail.js). No optimistic hook — the native re-push after the
@@ -200,11 +108,6 @@
     newBtn.textContent = '+ New issue';
     newBtn.addEventListener('click', () => App.openNewIssueModal());
     ctrlEl.appendChild(newBtn);
-
-    // Click anywhere outside an open filter closes it.
-    document.addEventListener('click', (e) => {
-      if (!e.target.closest('.filter')) closeAllMenus();
-    });
   }
 
   // ── Collapse state ──────────────────────────────────────────────────
@@ -666,18 +569,11 @@
         (b.labels.length > 6 ? ` (+${b.labels.length - 6})` : ''));
     }
 
-    // Dep counts — deps is the raw `dependencies` array from the JSONL
-    // record (we normalize to .deps in app.js). Each entry has
-    // issue_id / depends_on_id / type.
-    const deps = Array.isArray(b.deps) ? b.deps : [];
-    let blockedByN = 0, blocksN = 0;
-    for (const d of deps) {
-      if (!d) continue;
-      const kind = d.dependency_type || d.type || 'blocks';
-      if (kind !== 'blocks') continue;
-      if (d.issue_id === b.id)           blockedByN++;
-      else if (d.depends_on_id === b.id) blocksN++;
-    }
+    // Dep counts from the index over all beads — b.deps only holds the
+    // edges stored on this record, never the issues that depend on it.
+    const deps = App.depsOf(b.id);
+    const blockedByN = deps.up.filter(e => e.type === 'blocks').length;
+    const blocksN    = deps.down.filter(e => e.type === 'blocks').length;
     if (blockedByN) addFact('blocked by', blockedByN);
     if (blocksN)    addFact('blocks',     blocksN);
 
@@ -687,11 +583,35 @@
     return wrap;
   }
 
-  buildControls();
+  // ── Entry from the other views ──────────────────────────────────────
+  // Dashboard / Insights / Graph open issues here (the Issues view is
+  // gone): activity.html?open=<id> opens that issue's modal, and
+  // ?status=a,b&blocked=ready|blocked presets the facets. The query is
+  // stripped once read so a reload doesn't replay it.
+  function readDirectives() {
+    const p = new URLSearchParams(location.search);
+    if (![...p.keys()].length) return null;
+    const list = (k) => (p.get(k) || '').split(',').map(v => v.trim()).filter(Boolean);
+    try { history.replaceState(null, '', location.pathname); } catch {}
+    return {
+      open: p.get('open') || '',
+      facets: { status: list('status'), blocked: p.get('blocked') || '' },
+    };
+  }
 
-  App.onDataLoaded = render;
+  buildControls();
+  let directives = readDirectives();
+  if (directives) facets.set(directives.facets);
+
+  function onData() {
+    render();
+    if (directives && directives.open) App.openBeadModal(directives.open);
+    directives = null;
+  }
+
+  App.onDataLoaded = onData;
   App.onRefresh    = render;
   App.applyFilter  = render;
 
-  if (App.beads && App.beads.length) render();
+  if (App.beads && App.beads.length) onData();
 })();
