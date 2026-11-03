@@ -269,6 +269,7 @@ class GraphStore {
     constructor() {
         this.graph = null;
         this.wasmGraph = null;
+        this.wasmFlowGraph = null;   // blocker → dependent, for what-if
         this.wasmReady = false;
         this.container = null;
 
@@ -958,12 +959,22 @@ function buildWasmGraph() {
             store.wasmGraph.free();
             store.wasmGraph = null;
         }
+        if (store.wasmFlowGraph) {
+            store.wasmFlowGraph.free();
+            store.wasmFlowGraph = null;
+        }
 
         store.wasmGraph = DiGraph.withCapacity(store.issues.length, store.dependencies.length);
+        // NppBeads: same nodes with edges blocker → dependent, for whatIfClose.
+        // The engine's what-if follows out-edges to the issues a node
+        // unblocks; on wasmGraph (dependent → blocker) it answered backwards.
+        // Same node order, so indices are interchangeable with wasmGraph.
+        store.wasmFlowGraph = DiGraph.withCapacity(store.issues.length, store.dependencies.length);
 
         // Add all nodes
         store.issues.forEach(issue => {
             store.wasmGraph.addNode(issue.id);
+            store.wasmFlowGraph.addNode(issue.id);
         });
 
         // Add blocking edges
@@ -974,6 +985,7 @@ function buildWasmGraph() {
                 const toIdx = store.wasmGraph.nodeIdx(d.depends_on_id);
                 if (fromIdx !== undefined && toIdx !== undefined) {
                     store.wasmGraph.addEdge(fromIdx, toIdx);
+                    store.wasmFlowGraph.addEdge(toIdx, fromIdx);
                 }
             });
 
@@ -2035,7 +2047,7 @@ export function performWhatIf(node) {
     // Call WASM what-if
     let result;
     try {
-        result = store.wasmGraph.whatIfClose(idx, closedSet);
+        result = store.wasmFlowGraph.whatIfClose(idx, closedSet);
         if (typeof result === 'string') {
             result = JSON.parse(result);
         }
@@ -3715,6 +3727,10 @@ export function cleanup() {
     if (store.wasmGraph) {
         store.wasmGraph.free();
         store.wasmGraph = null;
+    }
+    if (store.wasmFlowGraph) {
+        store.wasmFlowGraph.free();
+        store.wasmFlowGraph = null;
     }
     if (store.animationFrame) {
         cancelAnimationFrame(store.animationFrame);

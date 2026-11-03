@@ -241,7 +241,9 @@
   <script>window.__nppBeadsForceFallback = true;</script>
 
   <!-- Alpine.js app -->
-  <div x-data="beadsApp()" x-init="init()" x-cloak>
+  <!-- No x-init="init()": Alpine 3 already calls the component's init().
+       Calling it again ran the whole startup twice, concurrently. -->
+  <div x-data="beadsApp()" x-cloak>
     <!-- NppBeads: viewer header removed; navigation is provided by the panel toolbar. -->
 
     <!-- NppBeads: mobile bottom-nav removed; navigation is provided by the panel toolbar. -->
@@ -1208,8 +1210,8 @@
                       <h3 class="text-sm font-medium text-gray-900 dark:text-gray-100 mt-1 line-clamp-2 group-hover:text-cyan-700 dark:group-hover:text-cyan-300 transition-colors" x-text="getIssue(item.issueId)?.title || item.issueId" :title="getIssue(item.issueId)?.title || item.issueId"></h3>
                     </div>
                     <span class="shrink-0 px-2 py-1 text-[10px] sm:text-xs font-bold bg-gradient-to-r from-cyan-100 to-sky-100 dark:from-cyan-900/50 dark:to-sky-900/50 text-cyan-700 dark:text-cyan-300 rounded-lg border border-cyan-200 dark:border-cyan-700">
-                      <span x-text="item.result?.cascade_depth || item.result?.total_unblocked || '?'"></span>
-                      <span x-text="item.result?.total_unblocked ? '↑' : '⬇'"></span>
+                      <span x-text="item.result?.transitive_unblocks ?? '?'"></span>
+                      <span>↑</span>
                     </span>
                   </div>
                 </div>

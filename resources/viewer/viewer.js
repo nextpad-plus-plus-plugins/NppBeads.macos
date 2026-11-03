@@ -135,7 +135,13 @@ const DB_STATE = {
 // Graph engine state (WASM)
 const GRAPH_STATE = {
   wasm: null,         // WASM module (bv_graph.js)
-  graph: null,        // DiGraph instance
+  graph: null,        // DiGraph instance (edges dependent → blocker; metrics)
+  // NppBeads: the same graph with edges blocker → dependent. The engine's
+  // whatIfClose / topWhatIf / actionableNodes follow out-edges to the
+  // issues a node unblocks, so on `graph` they answered backwards
+  // ("closing X unblocks X's own blockers"). Built in the same node order
+  // as `graph`, so node indices (and nodeMap) are shared.
+  flow: null,
   nodeMap: null,      // Map<string, number> - issue ID to node index
   ready: false,       // true when graph is loaded
 };
@@ -301,6 +307,12 @@ function cleanupWasm() {
     GRAPH_STATE.graph = null;
     GRAPH_STATE.ready = false;
     GRAPH_STATE.nodeMap = null;
+  }
+  if (GRAPH_STATE.flow && typeof GRAPH_STATE.flow.free === 'function') {
+    try { GRAPH_STATE.flow.free(); } catch (e) {
+      console.warn('[WASM Memory] Error freeing flow graph:', e);
+    }
+    GRAPH_STATE.flow = null;
   }
 
   console.log(`[WASM Memory] Cleanup complete. Tracked: ${WASM_ALLOCATIONS.trackCount}, Freed: ${WASM_ALLOCATIONS.freedCount}`);
@@ -618,7 +630,20 @@ function execScalar(sql, params = []) {
 /**
  * Initialize the WASM graph engine
  */
-async function initGraphEngine() {
+// NppBeads: overlapping calls share one in-flight init. Two concurrent
+// inits each instantiated the WASM module; the later instance replaced the
+// module's memory under graphs built on the earlier one, and engine calls
+// then trapped intermittently ("Unreachable code should not be executed").
+let graphEngineInit = null;
+function initGraphEngine() {
+  if (GRAPH_STATE.ready) return Promise.resolve(true);
+  if (!graphEngineInit) {
+    graphEngineInit = initGraphEngineOnce().finally(() => { graphEngineInit = null; });
+  }
+  return graphEngineInit;
+}
+
+async function initGraphEngineOnce() {
   if (GRAPH_STATE.ready) return true;
 
   // Check if we're already in fallback mode
@@ -644,6 +669,7 @@ async function initGraphEngine() {
 
     GRAPH_STATE.wasm = wasmModule;
     GRAPH_STATE.graph = new wasmModule.DiGraph();
+    GRAPH_STATE.flow = new wasmModule.DiGraph();
     GRAPH_STATE.nodeMap = new Map();
 
     // Load graph data from SQLite
@@ -664,16 +690,22 @@ async function initGraphEngine() {
 
       if (!GRAPH_STATE.nodeMap.has(from)) {
         const idx = GRAPH_STATE.graph.addNode(from);
+        GRAPH_STATE.flow.addNode(from);
         GRAPH_STATE.nodeMap.set(from, idx);
       }
       if (!GRAPH_STATE.nodeMap.has(to)) {
         const idx = GRAPH_STATE.graph.addNode(to);
+        GRAPH_STATE.flow.addNode(to);
         GRAPH_STATE.nodeMap.set(to, idx);
       }
 
       GRAPH_STATE.graph.addEdge(
         GRAPH_STATE.nodeMap.get(from),
         GRAPH_STATE.nodeMap.get(to)
+      );
+      GRAPH_STATE.flow.addEdge(
+        GRAPH_STATE.nodeMap.get(to),
+        GRAPH_STATE.nodeMap.get(from)
       );
     }
 
@@ -757,12 +789,12 @@ function whatIfClose(issueId) {
   if (idx === undefined) return null;
 
   const closedSet = buildClosedSet();
-  const result = GRAPH_STATE.graph.whatIfClose(idx, closedSet);
+  const result = GRAPH_STATE.flow.whatIfClose(idx, closedSet);
 
   // Convert node indices back to issue IDs
   if (result && result.cascade_ids) {
-    result.cascade_issue_ids = result.cascade_ids
-      .map(i => GRAPH_STATE.graph.nodeId(i))
+    result.cascade_issue_ids = Array.from(result.cascade_ids)
+      .map(i => GRAPH_STATE.flow.nodeId(i))
       .filter(Boolean);
   }
 
@@ -776,12 +808,12 @@ function topWhatIf(limit = 10) {
   if (!GRAPH_STATE.ready) return [];
 
   const closedSet = buildClosedSet();
-  const results = GRAPH_STATE.graph.topWhatIf(closedSet, limit);
+  const results = GRAPH_STATE.flow.topWhatIf(closedSet, limit);
 
   // Enrich with issue IDs
   return (results || []).map(item => ({
     ...item,
-    issueId: GRAPH_STATE.graph.nodeId(item.node),
+    issueId: GRAPH_STATE.flow.nodeId(item.node),
     result: item.result,
   }));
 }
@@ -793,10 +825,10 @@ function getActionableIssues() {
   if (!GRAPH_STATE.ready) return [];
 
   const closedSet = buildClosedSet();
-  const indices = GRAPH_STATE.graph.actionableNodes(closedSet);
+  const indices = GRAPH_STATE.flow.actionableNodes(closedSet);
 
-  return (indices || [])
-    .map(idx => GRAPH_STATE.graph.nodeId(idx))
+  return Array.from(indices || [])
+    .map(idx => GRAPH_STATE.flow.nodeId(idx))
     .filter(Boolean);
 }
 
