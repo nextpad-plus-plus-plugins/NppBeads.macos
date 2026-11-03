@@ -110,6 +110,9 @@
   }
 
   // ── JSONL parser (robust against partial-line truncation) ────────────
+  // Keeps issue records only: bd 1.3 exports also carry other record kinds
+  // (`"_type":"memory"` — key/value notes, no id) that must not become
+  // phantom issues in the dashboard counts and the graph.
   function parseJsonl(text) {
     const out = [];
     if (!text) return out;
@@ -117,8 +120,12 @@
     for (let i = 0; i < lines.length; i++) {
       const raw = lines[i].trim();
       if (!raw) continue;
-      try { out.push(JSON.parse(raw)); }
-      catch (e) { NPP.warn(`line ${i + 1} JSON parse failed:`, e.message); }
+      let rec;
+      try { rec = JSON.parse(raw); }
+      catch (e) { NPP.warn(`line ${i + 1} JSON parse failed:`, e.message); continue; }
+      if (!rec || typeof rec !== 'object' || !rec.id) continue;
+      if (rec._type && rec._type !== 'issue') continue;
+      out.push(rec);
     }
     return out;
   }

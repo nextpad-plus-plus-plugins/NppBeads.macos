@@ -85,7 +85,14 @@
             }
             return;
         }
-        [rows addObject:obj];
+        // Issue records only — bd 1.3 exports also carry other kinds
+        // (`"_type":"memory"` key/value notes with no id).
+        NSDictionary *rec = obj;
+        id kind = rec[@"_type"];
+        if ([kind isKindOfClass:[NSString class]] && ![kind isEqualToString:@"issue"]) return;
+        id rid = rec[@"id"];
+        if (![rid isKindOfClass:[NSString class]] || [rid length] == 0) return;
+        [rows addObject:rec];
     }];
     _cachedIssues = [rows copy];
 
