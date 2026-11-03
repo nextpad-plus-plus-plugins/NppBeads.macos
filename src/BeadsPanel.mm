@@ -199,25 +199,24 @@ static const CGFloat kBeadsZoomStep    = 0.10;
                               forOrientation:NSLayoutConstraintOrientationHorizontal];
     [_titleBar addSubview:_projectChip];
 
-    // View-mode popup — compact, 4 options.
+    // View-mode popup — compact, 5 options.
     _viewModePopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     _viewModePopup.translatesAutoresizingMaskIntoConstraints = NO;
     _viewModePopup.bezelStyle = NSBezelStyleRounded;
     _viewModePopup.controlSize = NSControlSizeSmall;
     _viewModePopup.font = [NSFont systemFontOfSize:11];
     [_viewModePopup addItemWithTitle:@"Dashboard"]; [_viewModePopup.menu.itemArray.lastObject setTag:BeadsViewModeDashboard];
-    [_viewModePopup addItemWithTitle:@"Issues"];    [_viewModePopup.menu.itemArray.lastObject setTag:BeadsViewModeIssues];
     [_viewModePopup addItemWithTitle:@"Insights"];  [_viewModePopup.menu.itemArray.lastObject setTag:BeadsViewModeInsights];
-    [_viewModePopup addItemWithTitle:@"Graph"];     [_viewModePopup.menu.itemArray.lastObject setTag:BeadsViewModeGraph];
-    [_viewModePopup addItemWithTitle:@"Board"];     [_viewModePopup.menu.itemArray.lastObject setTag:BeadsViewModeBoard];
     [_viewModePopup addItemWithTitle:@"Activity"];  [_viewModePopup.menu.itemArray.lastObject setTag:BeadsViewModeActivity];
+    [_viewModePopup addItemWithTitle:@"Board"];     [_viewModePopup.menu.itemArray.lastObject setTag:BeadsViewModeBoard];
+    [_viewModePopup addItemWithTitle:@"Graph"];     [_viewModePopup.menu.itemArray.lastObject setTag:BeadsViewModeGraph];
     [_viewModePopup selectItemWithTag:_viewMode];
     _viewModePopup.target = self;
     _viewModePopup.action = @selector(_didChangeViewMode:);
-    _viewModePopup.toolTip = @"Switch between Dashboard / Issues / Graph / Board";
+    _viewModePopup.toolTip = @"Switch between Dashboard / Insights / Activity / Board / Graph";
     [_titleBar addSubview:_viewModePopup];
 
-    // Search field — filters Board (and, in future, the Rich-viewer list).
+    // Search field — filters Board / Activity; Find-node on Graph.
     _searchField = [[NSSearchField alloc] init];
     _searchField.translatesAutoresizingMaskIntoConstraints = NO;
     _searchField.controlSize = NSControlSizeSmall;
@@ -434,8 +433,6 @@ static const CGFloat kBeadsZoomStep    = 0.10;
     switch (mode) {
         case BeadsViewModeDashboard:
             return [NSURL URLWithString:@"nppbeads://viewer/index.html#/"];
-        case BeadsViewModeIssues:
-            return [NSURL URLWithString:@"nppbeads://viewer/index.html#/issues"];
         case BeadsViewModeInsights:
             return [NSURL URLWithString:@"nppbeads://viewer/index.html#/insights"];
         case BeadsViewModeGraph:
@@ -691,7 +688,7 @@ static const CGFloat kBeadsZoomStep    = 0.10;
     //     Reload is safe and is the only thing that reliably refreshes
     //     the Rich viewer. evaluateJavaScript-pushed JSONL is enough
     //     for Board/Activity (`__nppApp.reload(jsonl)` is a defined
-    //     refresh hook), but for the Dashboard/Issues/Insights/Graph
+    //     refresh hook), but for the Dashboard/Insights/Graph
     //     views the Rich viewer reads its data once at init from
     //     `__nppBeadsPreloadedJsonl` and never re-reads it —
     //     `__nppBeads.receiveJsonl` only resolves pending init-time
@@ -969,21 +966,19 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
              "  window.__nppApp.setFilter({ query: %@ });"
              "}",
             jsStringLiteral(q)];
-    } else if (_viewMode == BeadsViewModeIssues) {
-        // Rich Issues — bridge.js installs __nppRichSearch which routes
-        // into the Alpine root and calls loadIssues() (LIKE fallback for
-        // missing FTS5).
+    } else if (_viewMode == BeadsViewModeGraph) {
+        // Graph — bridge.js __nppGraphSearch drives Find-node (isolate
+        // matches + neighbours); it parks the query until the graph loads.
         js = [NSString stringWithFormat:
-            @"if (typeof window.__nppRichSearch === 'function') {"
-             "  window.__nppRichSearch(%@);"
+            @"if (typeof window.__nppGraphSearch === 'function') {"
+             "  window.__nppGraphSearch(%@);"
              "}",
             jsStringLiteral(q)];
     } else {
-        return;   // Dashboard/Insights/Graph — search is hidden anyway
+        return;   // Dashboard/Insights — search is hidden anyway
     }
     // Log eval errors so a broken JS path is diagnosable from the
-    // system console — the Issues view search is the one that's most
-    // likely to silently fail (no UI indicator of "nothing happened").
+    // system console (no UI indicator of "nothing happened").
     [_webView evaluateJavaScript:js completionHandler:^(id r, NSError *e) {
         if (e) NSLog(@"[NppBeads] _pushSearchQuery(q=\"%@\") err=%@",
                      q ?: @"", e.localizedDescription);
@@ -1759,13 +1754,14 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
     _projectChip.enabled = YES;
     [_viewModePopup selectItemWithTag:_viewMode];
 
-    // Search field: Board + Issues + Activity (views with per-issue
-    // filtering). Dashboard / Insights are aggregates; Graph has its
-    // own "Find node…". Issues uses a LIKE fallback on loadIssues.
+    // Search field: Board + Activity filter their lists; on Graph it is
+    // Find-node. Dashboard / Insights are aggregates.
     BOOL showSearch = (_viewMode == BeadsViewModeBoard ||
-                       _viewMode == BeadsViewModeIssues ||
-                       _viewMode == BeadsViewModeActivity);
+                       _viewMode == BeadsViewModeActivity ||
+                       _viewMode == BeadsViewModeGraph);
     _searchField.hidden = !showSearch;
+    _searchField.placeholderString =
+        (_viewMode == BeadsViewModeGraph) ? @"Find node" : @"Search beads";
     if (!showSearch && _searchField.stringValue.length) {
         // Clear any stale query so switching back to Board shows the
         // full list.
@@ -1887,16 +1883,16 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
     } else if ([type isEqualToString:@"openBeadDetails"]) {
         NSString *bid = body[@"id"];
         if ([bid isKindOfClass:[NSString class]] && bid.length > 0) {
-            // Phase 2: jump to the Rich viewer's detail route. Phase 4
-            // introduces our native Detail view which will claim this.
-            _viewMode = BeadsViewModeDashboard;   // index.html is where #/issue/… lives
-            [_viewModePopup selectItemWithTag:BeadsViewModeDashboard];
-            NSCharacterSet *safe = [NSCharacterSet URLPathAllowedCharacterSet];
-            NSString *encoded = [bid stringByAddingPercentEncodingWithAllowedCharacters:safe];
-            NSString *href = [NSString stringWithFormat:
-                @"nppbeads://viewer/index.html#/issue/%@", encoded];
+            // Issue details live in the Activity view's modal
+            // (activity.html?open=<id>) — the Issues view is retired.
+            _viewMode = BeadsViewModeActivity;
+            [_viewModePopup selectItemWithTag:BeadsViewModeActivity];
+            NSURLComponents *c = [NSURLComponents componentsWithURL:
+                [self _urlForViewMode:BeadsViewModeActivity] resolvingAgainstBaseURL:NO];
+            c.queryItems = @[[NSURLQueryItem queryItemWithName:@"open" value:bid]];
             _viewerLoaded = NO;
-            [_webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:href]]];
+            [self _refreshTitleBar];
+            [_webView loadRequest:[NSURLRequest requestWithURL:c.URL]];
         }
     } else if ([type isEqualToString:@"openBeadModal"]) {
         // Phase 6 — from Activity view, clicking a row routes here.
@@ -1978,7 +1974,7 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
 }
 
 // Trigger a fresh list on all views after any successful write, so the
-// Board/Issues/Details panels catch up without waiting for the next poll.
+// Board/Activity views catch up without waiting for the next poll.
 // CRITICAL: bd auto-exports issues.jsonl on every write (via its post-
 // commit hook). To reflect that on-disk change, we must (1) invalidate
 // the bd cache, (2) reload the JsonlDataSource so it re-reads the file,
@@ -2437,7 +2433,7 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
     //
     // If we're already on Dashboard with the viewer loaded, just push
     // a clear-transient-state JS poke (the same one viewDidMoveToWindow
-    // uses) and return. If we're on a different view mode (Issues /
+    // uses) and return. If we're on a different view mode (Insights /
     // Graph / Board / Activity), navigate to Dashboard via a
     // hash-only fragment change which doesn't tear down the page.
     NSURL *targetURL = [self _urlForViewMode:_viewMode];
@@ -2471,7 +2467,7 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
 //
 // Also critical for fragment-only navigations: WKWebView often doesn't
 // fire didFinishNavigation when ONLY the URL fragment changes (e.g.
-// Dashboard #/ → Issues #/issues — same index.html). Without a signal
+// Dashboard #/ → Graph #/graph — same index.html). Without a signal
 // that the "new view" is ready, _viewerLoaded stays NO forever and
 // anything gated on it (toolbar search, post-load JS queue, etc.)
 // silently bails. The KVO observer is the reliable signal: if the path
@@ -2490,6 +2486,12 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
         _viewMode = detected;
         [_viewModePopup selectItemWithTag:_viewMode];
         [self _refreshTitleBar];
+        // In-page links (Dashboard / Insights / Graph issue clicks) land
+        // on Activity too — acknowledge the "N new" badge as the popup does.
+        if (_viewMode == BeadsViewModeActivity) {
+            [self _markActivityVisitedForCurrentProject];
+            [self _refreshStatusBar];
+        }
     }
     // Fragment-only navigation fix: if URL is now a known route and we
     // still think the viewer isn't loaded, adopt the new URL as ready.
@@ -2517,9 +2519,9 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
     }
 }
 
-// Map a current webView URL back to the popup's view mode. Detail
-// routes (#/issue/bd-…) count as Issues since that's where detail is
-// rendered. Unknown URLs stay on current.
+// Map a current webView URL back to the popup's view mode. The retired
+// Issues routes (#/issues, #/issue/…) redirect to Activity in-page and
+// read as Dashboard meanwhile. Unknown URLs stay on current.
 - (BeadsViewMode)_viewModeFromURL:(NSURL *)url {
     NSString *path = url.path ?: @"";
     NSString *frag = url.fragment ?: @"";
@@ -2528,8 +2530,6 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
     if ([path hasSuffix:@"/index.html"] || path.length == 0) {
         if ([frag hasPrefix:@"/graph"])    return BeadsViewModeGraph;
         if ([frag hasPrefix:@"/insights"]) return BeadsViewModeInsights;
-        if ([frag hasPrefix:@"/issues"] ||
-            [frag hasPrefix:@"/issue/"])   return BeadsViewModeIssues;
         return BeadsViewModeDashboard;
     }
     return _viewMode;

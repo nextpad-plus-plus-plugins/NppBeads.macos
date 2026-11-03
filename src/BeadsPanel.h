@@ -11,9 +11,10 @@
 //
 // View modes map to URLs inside the nppbeads:// origin:
 //   Dashboard  → index.html#/
-//   Issues     → index.html#/issues
-//   Graph      → index.html#/graph
+//   Insights   → index.html#/insights
+//   Activity   → app/activity.html (also hosts every issue's detail modal)
 //   Board      → app/board.html   (our own native-rendered kanban)
+//   Graph      → index.html#/graph
 //
 // The Rich viewer's own header + mobile-nav are hidden via CSS injection
 // (WKUserScript) so our toolbar is the sole navigation surface.
@@ -35,7 +36,7 @@ NS_ASSUME_NONNULL_BEGIN
 // Available view surfaces. Indices used as NSPopUpButton tags.
 typedef NS_ENUM(NSInteger, BeadsViewMode) {
     BeadsViewModeDashboard = 0,   // Rich viewer — dashboard
-    BeadsViewModeIssues    = 1,   // Rich viewer — issues list
+    // 1 was the Rich viewer's Issues list (retired; Activity replaces it)
     BeadsViewModeInsights  = 2,   // Rich viewer — insights (top-rank / cycles / etc.)
     BeadsViewModeGraph     = 3,   // Rich viewer — force-directed graph
     BeadsViewModeBoard     = 4,   // Native kanban

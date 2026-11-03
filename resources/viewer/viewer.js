@@ -1068,7 +1068,14 @@ function getGraphViewData() {
     WHERE type = 'blocks'
   `);
 
-  return { issues, dependencies };
+  // NppBeads: epic membership (Epic Flow + the Epic filter) — child → parent.
+  const hierarchy = execQuery(`
+    SELECT issue_id, depends_on_id
+    FROM dependencies
+    WHERE type = 'parent-child'
+  `);
+
+  return { issues, dependencies, hierarchy };
 }
 
 /**
@@ -1989,6 +1996,9 @@ function syncFiltersToURL(view, filters, sort, searchQuery) {
   }
 }
 
+// NppBeads: the Graph view's facet bar (facets.js handle), built once.
+let graphFacets = null;
+
 // ============================================================================
 // Router - Hash-based SPA navigation
 // ============================================================================
@@ -2086,6 +2096,23 @@ function navigateToIssue(id) {
 function navigateToIssues(filters = {}, sort = 'priority', search = '') {
   const params = filtersToURL(filters, sort, search);
   navigate(`/issues${params ? '?' + params : ''}`);
+}
+
+/**
+ * NppBeads: the Issues view is retired — issues open in the Activity view
+ * (app/activity.html), which reads these query parameters on load:
+ *   open    issue id whose detail modal to open
+ *   status  comma-separated statuses to preset the Status facet with
+ *   blocked 'ready' | 'blocked' preset for the Blocked facet
+ */
+function openInActivity(params = {}) {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    const val = Array.isArray(v) ? v.join(',') : v;
+    if (val) q.set(k, val);
+  }
+  const query = q.toString();
+  window.location.href = 'app/activity.html' + (query ? '?' + query : '');
 }
 
 /**
@@ -2395,6 +2422,11 @@ function beadsApp() {
     forceGraphError: null,
     forceGraphModule: null,
     graphDetailNode: null, // Currently selected node for detail pane
+    // NppBeads: Find-node query, typed in the panel toolbar's search field
+    // (bridge.js __nppGraphSearch), and the top bar's "N of M shown" line.
+    graphQuery: '',
+    graphSummary: '',
+    graphShown: { open: 0, deferred: 0, closed: 0 },   // the "Showing" box: visible nodes
 
     // Graph loading stages: 'init' | 'loading-data' | 'computing-metrics' | 'simulating' | null
     graphLoadingStage: null,
@@ -2469,11 +2501,11 @@ function beadsApp() {
           const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
           window.scrollTo({ top: 0, behavior: prefersReducedMotion ? 'auto' : 'smooth' });
         }
-        // NppBeads: when leaving Graph, clear Find-node isolation so the
-        // graph doesn't come back filtered next time the user visits.
+        // NppBeads: when leaving Graph, clear Find-node isolation — the
+        // panel clears its search field on views without search, so the
+        // graph must not come back filtered by a query nobody can see.
         if (oldView === 'graph' && newView !== 'graph') {
-          this.graphSearchQuery = '';
-          this.graphSearchResult = null;
+          this.graphQuery = '';
           if (this.forceGraphModule?.searchAndIsolate) {
             this.forceGraphModule.searchAndIsolate('');
           }
@@ -2586,10 +2618,10 @@ function beadsApp() {
         // - Ctrl/Meta+click highlights dependency paths
         if (ev && (ev.shiftKey || ev.ctrlKey || ev.metaKey)) return;
 
-        // Open the issue modal on double-click.
+        // Open the issue on double-click (in the Activity view's modal).
         if (ev && typeof ev.detail === 'number' && ev.detail < 2) return;
 
-        this.selectIssue(nodeId);
+        openInActivity({ open: nodeId });
       });
 
       try {
@@ -2739,6 +2771,12 @@ function beadsApp() {
       const route = parseRoute(hash);
 
       // Handle route
+      // NppBeads: the Issues view is retired; its routes open Activity.
+      if (route.view === 'issue' || route.view === 'issues') {
+        openInActivity(route.view === 'issue' ? { open: route.params.id } : {});
+        return;
+      }
+
       switch (route.view) {
         case 'issue':
           // Issue detail view
@@ -2820,7 +2858,7 @@ function beadsApp() {
         this.graphLoadingStage = 'loading-data';
 
         // Check for empty data BEFORE initializing ForceGraph to avoid wasteful init
-        const { issues, dependencies } = getGraphViewData();
+        const { issues, dependencies, hierarchy } = getGraphViewData();
 
         if (!issues || issues.length === 0) {
           console.warn('[ForceGraph] No issues to display');
@@ -2910,7 +2948,14 @@ function beadsApp() {
         this.graphSimulationDone = false;
 
         console.log(`[ForceGraph] Loading ${issues.length} issues, ${dependencies.length} dependencies`);
+        this.forceGraphModule.setHierarchy(hierarchy);
         this.forceGraphModule.loadData(issues, dependencies, precomputedLayout);
+        this.setupGraphFacets();
+        if (typeof window.__nppGraphPendingQuery === 'string') {
+          this.graphQuery = window.__nppGraphPendingQuery.trim();
+          delete window.__nppGraphPendingQuery;
+        }
+        this.applyGraphFilters({ fit: false });
 
         // Try to load history data for time-travel feature (bv-z38b)
         try {
@@ -3003,29 +3048,87 @@ function beadsApp() {
     },
 
     /**
-     * Search for a node in the graph and center on it
+     * NppBeads: build the graph's facet bar (facets.js) once, reading the
+     * graph module's issue records.
      */
-    // NppBeads: Find-node now ISOLATES matches + their 1-level neighbors.
-    // Empty query clears the isolation and reshows the full graph.
-    graphSearchNode(query) {
-      if (!this.forceGraphModule) return null;
-      const isolate = this.forceGraphModule.searchAndIsolate;
-      if (typeof isolate !== 'function') return null;
-      const q = (query || '').trim();
-      const res = isolate(q);
-      if (!q) return null;                          // cleared — not a "result"
-      if (!res || res.matches === 0) return null;   // no match
+    setupGraphFacets() {
+      if (graphFacets || !window.NppFacets) return;
+      const container = document.getElementById('graph-facets');
+      if (!container) return;
+      const mod = this.forceGraphModule;
+      const STATUS_LABELS = {
+        open: 'Open', in_progress: 'In Progress', blocked: 'Blocked', closed: 'Closed',
+        deferred: 'Deferred', pinned: 'Pinned', hooked: 'Hooked',
+      };
+      const TYPE_ICONS = { bug: '🪲', feature: '✨', task: '✓', epic: '⬢', chore: '•' };
+      graphFacets = window.NppFacets.create({
+        container,
+        beads:         () => mod.getIssues(),
+        typeOf:        (b) => b.type,
+        priorityOf:    (b) => b.priority,
+        statusOf:      (b) => b.status,
+        assigneeOf:    (b) => b.assignee,
+        blockingState: (b) => mod.getBlockingState(b.id),
+        typeLabel:     (v) => (TYPE_ICONS[v] || TYPE_ICONS.task) + ' ' + v,
+        statusLabel:   (v) => STATUS_LABELS[v] || v,
+        onChange:      () => this.applyGraphFilters(),
+        // Epic: an epic and everything under it (parent-child, any depth).
+        // Open epics first, then closed; each by id.
+        epics: {
+          list: () => (mod.getIssues() || [])
+            .filter(b => b.type === 'epic')
+            .sort((a, b) => ((a.status === 'closed') - (b.status === 'closed')) ||
+                            a.id.localeCompare(b.id, undefined, { numeric: true }))
+            .map(b => ({
+              id: b.id,
+              label: b.id + ' · ' + (b.title || '(no title)') +
+                     (b.status === 'closed' ? ' (closed)' : ''),
+            })),
+          of: (b) => mod.getEpicsOf(b.id),
+        },
+      });
+    },
 
-      // Re-fit view to the filtered graph after the next tick so the
-      // force simulation has time to produce coordinates.
-      setTimeout(() => {
-        const graph = this.forceGraphModule.getGraph?.();
-        if (graph && typeof graph.zoomToFit === 'function') {
-          graph.zoomToFit(400, 40);
-        }
-      }, 150);
-      // Return a "found" marker for the search UI's x-show pathways.
-      return { id: q, matches: res.matches, visible: res.visible };
+    /**
+     * NppBeads: apply the facet bar and the toolbar's Find-node query to
+     * the graph, then refresh the "N of M shown" summary.
+     */
+    applyGraphFilters({ fit = true } = {}) {
+      const mod = this.forceGraphModule;
+      if (!mod || !this.forceGraphReady || !mod.setFacetPredicate) return;
+      const facetsOn = !!graphFacets && graphFacets.active();
+      mod.setFacetPredicate(facetsOn ? (b) => graphFacets.passes(b) : null);
+      const q = (this.graphQuery || '').trim();
+      const res = mod.searchAndIsolate(q);
+      const issues = mod.getIssues() || [];
+      const total = issues.length;
+      const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
+      // Matches that also pass the facets (the rest of what's shown are
+      // their direct neighbours).
+      let matches = res.matches;
+      if (q && facetsOn && res.ids) {
+        const byId = new Map(issues.map(b => [b.id, b]));
+        matches = res.ids.filter(id => byId.has(id) && graphFacets.passes(byId.get(id))).length;
+      }
+      if (!q && !facetsOn) {
+        this.graphSummary = plural(total, 'issue', 'issues');
+      } else if (q && matches === 0) {
+        this.graphSummary = 'No issues match “' + q + '”' + (res.matches ? ' with these filters' : '');
+      } else {
+        this.graphSummary = res.visible + ' of ' + total + ' shown' +
+          (q ? ' · ' + plural(matches, 'match', 'matches') + ' for “' + q + '”' : '');
+      }
+      const shown = mod.getGraph?.()?.graphData?.().nodes || [];
+      const closed   = shown.filter(n => n.status === 'closed').length;
+      const deferred = shown.filter(n => n.status === 'deferred').length;
+      this.graphShown = { open: shown.length - closed - deferred, deferred, closed };
+      if (fit && res.visible > 0) {
+        // Re-fit after the next tick so the simulation has coordinates.
+        setTimeout(() => {
+          const graph = mod.getGraph?.();
+          if (graph && typeof graph.zoomToFit === 'function') graph.zoomToFit(400, 40);
+        }, 150);
+      }
     },
 
     /**
@@ -3219,7 +3322,15 @@ function beadsApp() {
      * Show issue detail (navigates to issue route)
      */
     showIssue(id) {
-      navigateToIssue(id);
+      openInActivity({ open: id });
+    },
+
+    /**
+     * NppBeads: dashboard stat cards open the Activity view with its
+     * Status / Blocked facets preset (the Issues list is retired).
+     */
+    openActivityFiltered(status, blocked = '') {
+      openInActivity({ status, blocked });
     },
 
     /**

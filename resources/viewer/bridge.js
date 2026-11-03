@@ -653,26 +653,18 @@
   }
 
   // Called by BeadsPanel._pushSearchQuery when the toolbar search is
-  // typed in while on the Rich Issues view. Sets searchQuery on the
-  // Alpine beadsApp root and triggers loadIssues(). Diagnostic log
-  // lets us trace via ctxCopyDiagnostics' __nppConsoleTail whether the
-  // bridge actually reached this function (helpful when Issues search
-  // appears to do nothing).
-  window.__nppRichSearch = function (q) {
+  // typed in while on the Graph view: Find-node (isolate matches plus
+  // their direct neighbours). Before Alpine or the graph is up, the query
+  // is parked and picked up once the graph has loaded its data.
+  window.__nppGraphSearch = function (q) {
     const query = (q || '').trim();
     const app = richApp();
-    if (!app) {
-      NPP.warn('__nppRichSearch called but Alpine root not ready; q="' + query + '"');
+    if (!app || typeof app.applyGraphFilters !== 'function') {
+      window.__nppGraphPendingQuery = query;
       return false;
     }
-    NPP.log('__nppRichSearch q="' + query + '" (view=' + (app.view || '?') +
-            ', hasLoad=' + (typeof app.loadIssues === 'function') + ')');
-    app.searchQuery = query;
-    app.page = 1;
-    if (typeof app.loadIssues === 'function') {
-      try { app.loadIssues(); }
-      catch (e) { NPP.warn('loadIssues failed:', e && e.message); }
-    }
+    app.graphQuery = query;
+    app.applyGraphFilters();
     return true;
   };
 

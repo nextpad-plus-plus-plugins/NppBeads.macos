@@ -149,7 +149,7 @@ static NSMenuItem *addItem(NSMenu *m, NSString *title, SEL action,
 
     // Full-screen toggle is the standard one AppKit auto-wires. The view
     // popup inside the panel toolbar is the canonical place for switching
-    // among Dashboard / Issues / etc., so we don't duplicate that into
+    // among Dashboard / Insights / etc., so we don't duplicate that into
     // the menu bar — keeps the View menu uncluttered and avoids competing
     // with the panel's existing affordance.
     NSMenuItem *full = addItem(viewMenu, @"Enter Full Screen",

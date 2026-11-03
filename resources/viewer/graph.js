@@ -37,7 +37,8 @@ const darkPalette = {
         open: '#50FA7B',
         in_progress: '#FFB86C',
         blocked: '#FF5555',
-        closed: '#6272A4'
+        closed: '#6272A4',
+        deferred: '#BD93F9'
     },
     priority: {
         0: '#FF0000', 1: '#FF5555', 2: '#FFB86C', 3: '#F1FA8C', 4: '#6272A4'
@@ -65,7 +66,8 @@ const lightPalette = {
 
     status: {
         open: '#10b981', in_progress: '#f59e0b',
-        blocked: '#ef4444', closed: '#6b7280'
+        blocked: '#ef4444', closed: '#6b7280',
+        deferred: '#8b5cf6'
     },
     priority: {
         0: '#dc2626', 1: '#ef4444', 2: '#f59e0b', 3: '#ca8a04', 4: '#6b7280'
@@ -340,6 +342,13 @@ class GraphStore {
         // neighbors) are shown — driven by the Find-node search. null
         // means "no isolation, show everything that passes filters".
         this.isolateNodes = null;
+        // NppBeads: Type/Priority/Status/Assignee/Blocked/Blocking facets
+        // (facets.js) as a predicate over issues; null = no facet filter.
+        this.facetPredicate = null;
+        // NppBeads: parent-child edges {issue_id: child, depends_on_id:
+        // parent}, kept apart from `dependencies` (blocks only) so metrics
+        // and blocking state never see them. Set via setHierarchy().
+        this.hierarchy = [];
 
         // Animation state
         this.animationFrame = null;
@@ -371,6 +380,9 @@ const store = new GraphStore();
 //  'dependency' → arrow points from dependent to prerequisite (build-system
 //                 / "depends-on" convention). What the graph rendered before
 //                 this option existed.
+//  'epic'       → draws the parent-child hierarchy instead of `blocks`
+//                 edges: arrow from each parent (epic) to its children, so
+//                 every epic's items gather around it ("Epic Flow").
 //
 // Persisted to localStorage so the user's choice sticks across reloads. The
 // underlying WASM DiGraph (and every metric computed from it — PageRank,
@@ -381,12 +393,12 @@ const ARROW_DIR_KEY = 'nppbeads.arrowDirection';
 let arrowDirection = (() => {
     try {
         const saved = localStorage.getItem(ARROW_DIR_KEY);
-        return (saved === 'dependency' || saved === 'execution') ? saved : 'execution';
+        return ['dependency', 'execution', 'epic'].indexOf(saved) !== -1 ? saved : 'execution';
     } catch (_) { return 'execution'; }
 })();
 export function getArrowDirection() { return arrowDirection; }
 export function setArrowDirection(dir) {
-    const next = (dir === 'dependency') ? 'dependency' : 'execution';
+    const next = (dir === 'dependency' || dir === 'epic') ? dir : 'execution';
     if (next === arrowDirection) return;
     arrowDirection = next;
     try { localStorage.setItem(ARROW_DIR_KEY, next); } catch (_) {}
@@ -1383,6 +1395,9 @@ function prepareGraphData(layout = null) {
         // NppBeads isolation (Find-node) — overrides everything else.
         if (store.isolateNodes && !store.isolateNodes.has(issue.id)) return false;
 
+        // NppBeads facet filters (top bar).
+        if (store.facetPredicate && !store.facetPredicate(issue)) return false;
+
         // Status filter
         if (filters.status && issue.status !== filters.status) return false;
         if (!filters.showClosed && issue.status === 'closed') return false;
@@ -1415,15 +1430,20 @@ function prepareGraphData(layout = null) {
     //   'execution'  → prereq → dependent (flow convention, default)
     //   'dependency' → dependent → prereq (build-system convention)
     // See the arrowDirection block near the top of the module.
+    //   'epic'       → parent → child over the parent-child hierarchy
     const execFlow = (arrowDirection === 'execution');
-    let links = dependencies
-        .filter(d => (d.type === 'blocks' || !d.type))
-        .filter(d => nodeIds.has(d.issue_id) && nodeIds.has(d.depends_on_id))
-        .map(d => ({
-            source: execFlow ? d.depends_on_id : d.issue_id,
-            target: execFlow ? d.issue_id      : d.depends_on_id,
-            type:   d.type || 'blocks'
-        }));
+    let links = arrowDirection === 'epic'
+        ? store.hierarchy
+            .filter(d => nodeIds.has(d.issue_id) && nodeIds.has(d.depends_on_id))
+            .map(d => ({ source: d.depends_on_id, target: d.issue_id, type: 'parent-child' }))
+        : dependencies
+            .filter(d => (d.type === 'blocks' || !d.type))
+            .filter(d => nodeIds.has(d.issue_id) && nodeIds.has(d.depends_on_id))
+            .map(d => ({
+                source: execFlow ? d.depends_on_id : d.issue_id,
+                target: execFlow ? d.issue_id      : d.depends_on_id,
+                type:   d.type || 'blocks'
+            }));
 
     // Enrich nodes with computed data
     nodes = nodes.map(issue => {
@@ -2848,7 +2868,89 @@ export function searchAndIsolate(term) {
     const graphData = prepareGraphData();
     store.graph.graphData(graphData);
     dispatchEvent('isolateChange', { count: keep.size, matches: matchIds.size });
-    return { matches: matchIds.size, visible: graphData.nodes.length };
+    return { matches: matchIds.size, visible: graphData.nodes.length, ids: [...matchIds] };
+}
+
+// NppBeads: facet filters from the graph's top bar. `predicate` decides
+// per issue; null clears. Combines with Find-node isolation (both apply).
+export function setFacetPredicate(predicate) {
+    store.facetPredicate = typeof predicate === 'function' ? predicate : null;
+    if (!store.graph) return null;
+    const graphData = prepareGraphData();
+    store.graph.graphData(graphData);
+    dispatchEvent('filterChange', { filters: { ...store.filters } });
+    return { visible: graphData.nodes.length };
+}
+
+// NppBeads: open `blocks` neighbours of an issue, as `bd ready` counts them:
+// blockers = prerequisites that aren't closed, blocking = dependents that
+// aren't closed. Indexed once per loaded data set.
+let blockIndex = null;
+let blockIndexFor = null;
+export function getBlockingState(id) {
+    if (blockIndexFor !== store.dependencies) {
+        blockIndex = new Map();
+        const entry = (k) => {
+            let e = blockIndex.get(k);
+            if (!e) { e = { up: new Set(), down: new Set() }; blockIndex.set(k, e); }
+            return e;
+        };
+        for (const d of store.dependencies) {
+            if (d.type && d.type !== 'blocks') continue;
+            if (!d.issue_id || !d.depends_on_id || d.issue_id === d.depends_on_id) continue;
+            entry(d.issue_id).up.add(d.depends_on_id);
+            entry(d.depends_on_id).down.add(d.issue_id);
+        }
+        blockIndexFor = store.dependencies;
+    }
+    const e = blockIndex.get(id);
+    if (!e) return { blockers: 0, blocking: 0 };
+    const live = (other) => {
+        const o = store.nodeMap.get(other);
+        return !!o && o.status !== 'closed';
+    };
+    let blockers = 0, blocking = 0;
+    for (const o of e.up)   if (live(o)) blockers++;
+    for (const o of e.down) if (live(o)) blocking++;
+    return { blockers, blocking };
+}
+
+export function getIssues() {
+    return store.issues;
+}
+
+// NppBeads: the parent-child hierarchy (Epic Flow + the Epic filter). Call
+// before loadData() so the first render can use it.
+export function setHierarchy(edges) {
+    store.hierarchy = (edges || []).filter(d =>
+        d && d.issue_id && d.depends_on_id && d.issue_id !== d.depends_on_id);
+}
+
+// NppBeads: the epics an issue belongs to — itself if it is an epic, plus
+// every epic up its parent chain(s). Cycle-safe; indexed once per data set.
+let parentsOf = null;
+let parentsFor = null;
+export function getEpicsOf(id) {
+    if (parentsFor !== store.hierarchy) {
+        parentsOf = new Map();
+        for (const d of store.hierarchy) {
+            if (!parentsOf.has(d.issue_id)) parentsOf.set(d.issue_id, []);
+            parentsOf.get(d.issue_id).push(d.depends_on_id);
+        }
+        parentsFor = store.hierarchy;
+    }
+    const epics = [];
+    const seen = new Set();
+    const queue = [id];
+    while (queue.length) {
+        const cur = queue.shift();
+        if (seen.has(cur)) continue;
+        seen.add(cur);
+        const issue = store.nodeMap.get(cur);
+        if (issue && issue.type === 'epic') epics.push(cur);
+        for (const p of (parentsOf.get(cur) || [])) queue.push(p);
+    }
+    return epics;
 }
 
 // NppBeads: runtime toggles for visual features. Both cause a graph
@@ -3442,7 +3544,10 @@ function showTooltip(node) {
         <div style="margin-bottom: 8px; line-height: 1.4;">
             ${escapeHtml(node.title)}
         </div>
-        <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px;">
+            <span title="Issue type" style="border: 1px solid ${THEME.fgMuted}; color: ${THEME.fg}; padding: 1px 7px; border-radius: 4px; font-size: 10px; text-transform: uppercase;">
+                ${escapeHtml(node.type || 'task')}
+            </span>
             <span style="background: ${statusColor}; color: ${THEME.bg}; padding: 2px 8px; border-radius: 4px; font-size: 10px; text-transform: uppercase;">
                 ${node.status}
             </span>
