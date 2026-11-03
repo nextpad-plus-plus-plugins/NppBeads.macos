@@ -1253,6 +1253,15 @@ function countSearchIssues(term, filters = {}) {
 /**
  * Get project statistics
  */
+// NppBeads: an issue is blocked only while a `blocks` prerequisite is still
+// open — closed blockers don't count (`bd ready` semantics, as in the
+// Activity view's Ready / Blocked filter the dashboard cards open).
+const HAS_OPEN_BLOCKER = `EXISTS (
+    SELECT 1 FROM dependencies d JOIN issues b ON b.id = d.depends_on_id
+    WHERE d.issue_id = issue_overview_mv.id
+    AND (d.type = 'blocks' OR d.type = '')
+    AND b.status <> 'closed')`;
+
 function getStats() {
   const stats = {};
 
@@ -1272,19 +1281,18 @@ function getStats() {
     console.error('[Stats] Error loading status counts:', err);
   }
 
-  // Count blocked (has blocked_by_ids and status is open/in_progress)
+  // Count blocked (open/in_progress waiting on at least one open blocker)
   stats.blocked = execScalar(`
     SELECT COUNT(*) FROM issue_overview_mv
-    WHERE blocked_by_ids IS NOT NULL
-    AND blocked_by_ids <> ''
-    AND status IN ('open', 'in_progress')
+    WHERE status IN ('open', 'in_progress')
+    AND ${HAS_OPEN_BLOCKER}
   `) || 0;
 
   // Count actionable (open/in_progress with NO open blockers)
   stats.actionable = execScalar(`
     SELECT COUNT(*) FROM issue_overview_mv
     WHERE status IN ('open', 'in_progress')
-    AND (blocked_by_ids IS NULL OR blocked_by_ids = '')
+    AND NOT ${HAS_OPEN_BLOCKER}
   `) || 0;
 
   // Total
@@ -1300,7 +1308,7 @@ function getQuickWins(limit = 5) {
   return execQuery(`
     SELECT * FROM issue_overview_mv
     WHERE status IN ('open', 'in_progress')
-    AND (blocked_by_ids IS NULL OR blocked_by_ids = '')
+    AND NOT ${HAS_OPEN_BLOCKER}
     ORDER BY blocks_count DESC, triage_score DESC
     LIMIT ?
   `, [limit]);
