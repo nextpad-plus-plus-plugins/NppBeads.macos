@@ -397,6 +397,184 @@ export function setArrowDirection(dir) {
     }
 }
 
+// ============================================================================
+// 2D / 3D RENDERER (NppBeads)
+// ============================================================================
+//  '3d' → 3d-force-graph (WebGL, vendor/graph3d.min.js). DEFAULT.
+//  '2d' → force-graph (canvas), the original renderer.
+//
+// Both renderers share prepareGraphData(), the filters, the metrics and the
+// color/size/opacity rules (getNodeColor & co.), so every feature that only
+// changes WHAT is shown works in both. Only the drawing and camera code is
+// per-renderer. Persisted to localStorage like the arrow direction.
+const DIMENSION_KEY = 'nppbeads.graphDimension';
+let graphDimension = (() => {
+    try {
+        const saved = localStorage.getItem(DIMENSION_KEY);
+        return (saved === '2d' || saved === '3d') ? saved : '3d';
+    } catch (_) { return '3d'; }
+})();
+
+function is3D() { return graphDimension === '3d'; }
+
+// Force factories for the active renderer. d3-force-3d has the same API as
+// d3 v7's forces but also moves nodes along z.
+function F() { return is3D() ? window.d3Force3d : d3; }
+
+function can3D() {
+    if (typeof window.ForceGraph3D !== 'function' || !window.THREE ||
+        typeof window.SpriteText !== 'function' || !window.d3Force3d) return false;
+    try {
+        const canvas = document.createElement('canvas');
+        return !!(canvas.getContext('webgl2') || canvas.getContext('webgl'));
+    } catch (_) { return false; }
+}
+
+export function getDimension() { return graphDimension; }
+
+/**
+ * Switch between the 2D and 3D renderer. Rebuilds the renderer in the same
+ * container and reloads the current data; returns the dimension actually in
+ * effect (3D falls back to 2D when WebGL or the 3D bundle is unavailable).
+ */
+export function setDimension(dim) {
+    const next = (dim === '2d') ? '2d' : '3d';
+    try { localStorage.setItem(DIMENSION_KEY, next); } catch (_) {}
+    if (next === graphDimension && store.graph) return graphDimension;
+    graphDimension = next;
+    if (!store.container || !store.graph) return graphDimension;
+
+    const issues = store.issues;
+    const dependencies = store.dependencies;
+    hideTooltip();
+    destroyGraphInstance();
+    createGraphInstance();
+    store.graph.width(store.container.clientWidth);
+    store.graph.height(store.container.clientHeight);
+    if (issues.length) loadData(issues, dependencies, null);
+    dispatchEvent('dimensionChange', { dimension: graphDimension });
+    return graphDimension;
+}
+
+/**
+ * Zoom by a factor around the current view center (>1 zooms in).
+ */
+export function zoomBy(factor, duration = 300) {
+    if (!store.graph || !(factor > 0)) return;
+    if (!is3D()) {
+        store.graph.zoom(store.graph.zoom() * factor, duration);
+        return;
+    }
+    const cam = store.graph.cameraPosition();
+    // The orbit target, not cameraPosition().lookAt — that is a point a fixed
+    // 1000 units ahead of the camera, so scaling toward it overshoots.
+    const t = store.graph.controls()?.target || cam.lookAt;
+    store.graph.cameraPosition({
+        x: t.x + (cam.x - t.x) / factor,
+        y: t.y + (cam.y - t.y) / factor,
+        z: t.z + (cam.z - t.z) / factor
+    }, { x: t.x, y: t.y, z: t.z }, duration);
+}
+
+// Move the 3D camera to look at (x, y, z) from `distance` away, keeping the
+// current viewing direction. Omitting `distance` keeps the current distance.
+function centerCamera3D(x, y, z, distance, duration) {
+    const cam = store.graph.cameraPosition();
+    const dx = cam.x - x, dy = cam.y - y, dz = cam.z - z;
+    const len = Math.hypot(dx, dy, dz) || 1;
+    const d = distance ?? len;
+    store.graph.cameraPosition(
+        { x: x + dx / len * d, y: y + dy / len * d, z: z + dz / len * d },
+        { x, y, z }, duration);
+}
+
+// '#rrggbb', '#rrggbbaa' or 'hsl(...)' plus an opacity → a CSS color carrying
+// that alpha. The 3D renderer reads per-link opacity from the color's alpha.
+function colorWithAlpha(color, alpha) {
+    const hex = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(color || '');
+    if (hex) {
+        const n = parseInt(hex[1], 16);
+        const a = alpha * (hex[2] ? parseInt(hex[2], 16) / 255 : 1);
+        return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${a.toFixed(3)})`;
+    }
+    const hsl = /^hsl\((.*)\)$/i.exec(color || '');
+    if (hsl) return `hsla(${hsl[1]}, ${alpha})`;
+    return color;
+}
+
+let sphereGeometry3D = null;
+
+// One persistent object per node; update3DNode() restyles it in place, so
+// hover/selection highlighting doesn't rebuild the scene.
+function build3DNode(node) {
+    const THREE = window.THREE;
+    if (!sphereGeometry3D) sphereGeometry3D = new THREE.SphereGeometry(1, 20, 14);
+    const group = new THREE.Group();
+    const mesh = new THREE.Mesh(sphereGeometry3D, new THREE.MeshLambertMaterial());
+    const label = new window.SpriteText('', 4);
+    label.fontFace = "'Inter', -apple-system, sans-serif";
+    label.fontWeight = '500';
+    label.material.depthWrite = false;
+    group.add(mesh);
+    group.add(label);
+    node.__npp3d = { mesh, label, text: null, textColor: null };
+    update3DNode(node);
+    return group;
+}
+
+function update3DNode(node) {
+    const o = node.__npp3d;
+    if (!o) return;
+    const size = getNodeSize(node);
+    const color = getNodeColor(node);
+    const opacity = getNodeOpacity(node);
+    const emphasized = store.selectedNode?.id === node.id ||
+                       store.hoveredNode?.id === node.id ||
+                       (store.connectedNodes.size > 0 && store.connectedNodes.has(node.id));
+
+    const material = o.mesh.material;
+    o.mesh.scale.setScalar(size);
+    material.color.set(color);
+    material.emissive.set(emphasized ? color : 0x000000);
+    material.emissiveIntensity = emphasized ? 0.45 : 0;
+    material.opacity = opacity;
+    if (material.transparent !== (opacity < 1)) {
+        material.transparent = opacity < 1;
+        material.depthWrite = opacity >= 1;
+        material.needsUpdate = true;  // transparency changes the render pass
+    }
+
+    let text = node.id;
+    if (store.config.showFireMarks && node.priority <= 1) {
+        text = (node.priority === 0 ? '🔥🔥 ' : '🔥 ') + text;
+    }
+    if (node.inCycle) text += ' ⚠️';
+    // SpriteText redraws its canvas on every property write; skip no-ops.
+    if (o.text !== text) { o.label.text = text; o.text = text; }
+    if (o.textColor !== THEME.fg) { o.label.color = THEME.fg; o.textColor = THEME.fg; }
+    o.label.visible = store.config.showLabels;
+    o.label.material.opacity = opacity * 0.85;
+    o.label.position.y = -(size + 4);
+}
+
+function getLinkWidth3D(link) {
+    const srcId = link.source?.id || link.source;
+    const tgtId = link.target?.id || link.target;
+    if (store.highlightedLinks.has(`${srcId}-${tgtId}`)) return 1.6;
+    if (store.connectedNodes.size > 0 && store.connectedNodes.has(srcId) && store.connectedNodes.has(tgtId)) return 1.2;
+    return 0;  // plain line
+}
+
+function refresh3D() {
+    const g = store.graph;
+    if (!g) return;
+    g.graphData().nodes.forEach(update3DNode);
+    // Re-setting an accessor makes the renderer re-evaluate it for every link.
+    g.linkColor(g.linkColor())
+     .linkWidth(g.linkWidth())
+     .linkDirectionalArrowColor(g.linkDirectionalArrowColor());
+}
+
 /**
  * Helper to force ForceGraph to redraw without disturbing the simulation.
  * Uses a micro zoom adjustment trick - imperceptible to users but forces canvas redraw.
@@ -404,6 +582,7 @@ export function setArrowDirection(dir) {
  */
 function refreshGraph() {
     if (!store.graph) return;
+    if (is3D()) { refresh3D(); return; }
     // Get current zoom level
     const currentZoom = store.graph.zoom();
     // Guard against undefined/NaN zoom values
@@ -533,6 +712,7 @@ export function applyTheme(isDark) {
     if (store && store.graph && typeof store.graph.backgroundColor === 'function') {
         store.graph.backgroundColor(THEME.bg);
     }
+    if (store && store.graph && is3D()) refresh3D();
 }
 
 // Surface applyTheme on a well-known global so the native side can
@@ -894,14 +1074,129 @@ export async function initGraph(containerId, options = {}) {
     // Merge config
     Object.assign(store.config, options);
 
-    // Clear container
-    store.container.innerHTML = '';
-
     // Initialize WASM
     await initWasm();
 
-    // Create force-graph instance
-    store.graph = ForceGraph()(store.container)
+    createGraphInstance();
+
+    // Setup keyboard shortcuts
+    setupKeyboardShortcuts();
+
+    // Emit ready event
+    dispatchEvent('ready', { graph: store.graph, wasmReady: store.wasmReady });
+
+    return store.graph;
+}
+
+function createGraphInstance() {
+    store.container.innerHTML = '';
+    if (is3D() && !can3D()) {
+        console.warn('[bv-graph] 3D renderer unavailable (no WebGL or 3D bundle) — using 2D');
+        graphDimension = '2d';
+    }
+    store.graph = is3D() ? create3DGraph() : create2DGraph();
+}
+
+function destroyGraphInstance() {
+    const g = store.graph;
+    if (!g) return;
+    const renderer = is3D() ? g.renderer?.() : null;
+    g._destructor?.();
+    // WebKit caps live WebGL contexts; release this one now rather than at GC.
+    renderer?.dispose();
+    renderer?.forceContextLoss?.();
+    store.graph = null;
+    store.container.innerHTML = '';
+}
+
+// Simulation progress tracking with early "done" detection
+// The simulation can run for a long time at very low alpha values,
+// but the layout is visually stable much earlier. We consider it "done"
+// when alpha drops below 0.05 (95% progress) for smoother UX.
+function handleEngineTick() {
+    // Get current simulation alpha (1 = start, 0 = done)
+    // Alpha decays from 1 towards alphaMin (0.001)
+    const alpha = store.graph.d3Alpha?.() ?? 0;
+    const progress = Math.round((1 - alpha) * 100);
+
+    // Consider layout stable when alpha < 0.05 (95% progress)
+    // This provides a much snappier feel without waiting for full convergence
+    const effectivelyDone = alpha < 0.05;
+    dispatchEvent('simulationProgress', {
+        alpha,
+        progress: effectivelyDone ? 100 : progress,
+        done: effectivelyDone
+    });
+}
+
+function handleEngineStop() {
+    dispatchEvent('simulationProgress', { alpha: 0, progress: 100, done: true });
+}
+
+function create3DGraph() {
+    const g = ForceGraph3D({ controlType: 'orbit' })(store.container)
+        // Data binding
+        .nodeId('id')
+        .linkSource('source')
+        .linkTarget('target')
+
+        // Nodes: sphere + id label, restyled in place by update3DNode().
+        // nodeVal is the sphere volume, so with nodeRelSize 1 the renderer's
+        // radius (cbrt(nodeVal)) matches getNodeSize() and arrowheads land
+        // on the sphere surface.
+        .nodeRelSize(1)
+        .nodeVal(node => Math.pow(getNodeSize(node), 3))
+        .nodeThreeObject(build3DNode)
+        .nodeLabel(() => '')  // showTooltip() handles hover cards
+
+        // Links
+        .linkCurvature(0.2)
+        .linkOpacity(1)
+        .linkColor(link => colorWithAlpha(getLinkColor(link), getLinkOpacity(link)))
+        .linkWidth(getLinkWidth3D)
+        .linkDirectionalArrowLength(6)
+        .linkDirectionalArrowRelPos(1)
+        .linkDirectionalArrowColor(link => getLinkColor(link))
+        .linkDirectionalParticles(() => store.config.enableParticles ? 2 : 0)
+        .linkDirectionalParticleSpeed(store.config.particleSpeed)
+        .linkDirectionalParticleWidth(1.5)
+        .linkDirectionalParticleColor(() => THEME.accent.cyan)
+
+        // Warmup
+        .warmupTicks(store.config.warmupTicks)
+        .cooldownTicks(store.config.cooldownTicks)
+
+        // Interaction handlers (no onZoom: the 3D camera has no zoom transform)
+        .onNodeClick(handleNodeClick)
+        .onNodeRightClick(handleNodeRightClick)
+        .onNodeHover(handleNodeHover)
+        .onNodeDrag(handleNodeDrag)
+        .onNodeDragEnd(handleNodeDragEnd)
+        .onLinkClick(handleLinkClick)
+        .onLinkHover(handleLinkHover)
+        .onBackgroundClick(handleBackgroundClick)
+        .onEngineTick(handleEngineTick)
+        .onEngineStop(handleEngineStop)
+
+        .backgroundColor(THEME.bg)
+        .showNavInfo(false);
+
+    // Same tuning as 2D, applied to the renderer's built-in 3D forces.
+    g.d3Force('charge')
+        .strength(store.config.chargeStrength)
+        .distanceMax(300);
+    g.d3Force('link')
+        .distance(link => getLinkDistance(link))
+        .strength(0.7);
+    g.d3Force('x', F().forceX().strength(store.config.centerStrength))
+     .d3Force('y', F().forceY().strength(store.config.centerStrength))
+     .d3Force('z', F().forceZ().strength(store.config.centerStrength))
+     .d3Force('collision', F().forceCollide().radius(node => getNodeSize(node) + 5));
+    return g;
+}
+
+function create2DGraph() {
+    return ForceGraph()(store.container)
         // Data binding
         .nodeId('id')
         .linkSource('source')
@@ -920,18 +1215,18 @@ export async function initGraph(containerId, options = {}) {
         .linkDirectionalParticleColor(() => THEME.accent.cyan)
 
         // Forces
-        .d3Force('charge', d3.forceManyBody()
+        .d3Force('charge', F().forceManyBody()
             .strength(store.config.chargeStrength)
             .distanceMax(300))
-        .d3Force('link', d3.forceLink()
+        .d3Force('link', F().forceLink()
             .distance(link => getLinkDistance(link))
             .strength(0.7))
-        .d3Force('center', d3.forceCenter())
-        .d3Force('x', d3.forceX()
+        .d3Force('center', F().forceCenter())
+        .d3Force('x', F().forceX()
             .strength(store.config.centerStrength))
-        .d3Force('y', d3.forceY()
+        .d3Force('y', F().forceY()
             .strength(store.config.centerStrength))
-        .d3Force('collision', d3.forceCollide()
+        .d3Force('collision', F().forceCollide()
             .radius(node => getNodeSize(node) + 5))
 
         // Warmup
@@ -948,29 +1243,8 @@ export async function initGraph(containerId, options = {}) {
         .onLinkHover(handleLinkHover)
         .onBackgroundClick(handleBackgroundClick)
         .onZoom(handleZoom)
-
-        // Simulation progress tracking with early "done" detection
-        // The simulation can run for a long time at very low alpha values,
-        // but the layout is visually stable much earlier. We consider it "done"
-        // when alpha drops below 0.05 (95% progress) for smoother UX.
-        .onEngineTick(() => {
-            // Get current simulation alpha (1 = start, 0 = done)
-            // Alpha decays from 1 towards alphaMin (0.001)
-            const alpha = store.graph.d3Alpha?.() ?? 0;
-            const progress = Math.round((1 - alpha) * 100);
-
-            // Consider layout stable when alpha < 0.05 (95% progress)
-            // This provides a much snappier feel without waiting for full convergence
-            const effectivelyDone = alpha < 0.05;
-            dispatchEvent('simulationProgress', {
-                alpha,
-                progress: effectivelyDone ? 100 : progress,
-                done: effectivelyDone
-            });
-        })
-        .onEngineStop(() => {
-            dispatchEvent('simulationProgress', { alpha: 0, progress: 100, done: true });
-        })
+        .onEngineTick(handleEngineTick)
+        .onEngineStop(handleEngineStop)
 
         // Background
         .backgroundColor(THEME.bg)
@@ -981,14 +1255,6 @@ export async function initGraph(containerId, options = {}) {
                 drawClusterHulls(ctx, globalScale);
             }
         });
-
-    // Setup keyboard shortcuts
-    setupKeyboardShortcuts();
-
-    // Emit ready event
-    dispatchEvent('ready', { graph: store.graph, wasmReady: store.wasmReady });
-
-    return store.graph;
 }
 
 // ============================================================================
@@ -1710,6 +1976,7 @@ function handleNodeDragEnd(node) {
     // Fix position after drag
     node.fx = node.x;
     node.fy = node.y;
+    if (is3D()) node.fz = node.z;
     dispatchEvent('nodeDragEnd', { node });
 }
 
@@ -2432,8 +2699,14 @@ export function zoomToCycle(index = cycleNavigatorState.currentIndex) {
     const scaleY = containerHeight / height;
     const scale = Math.min(scaleX, scaleY, 2.5); // Cap at 2.5x zoom
 
-    store.graph.centerAt(centerX, centerY, 400);
-    store.graph.zoom(scale, 400);
+    if (is3D()) {
+        const zs = cycleNodes.map(n => n.z || 0);
+        const centerZ = (Math.min(...zs) + Math.max(...zs)) / 2;
+        centerCamera3D(centerX, centerY, centerZ, Math.max(width, height) * 1.2 + 60, 400);
+    } else {
+        store.graph.centerAt(centerX, centerY, 400);
+        store.graph.zoom(scale, 400);
+    }
 
     dispatchEvent('cycleZoom', { index, cycle, center: { x: centerX, y: centerY }, scale });
 }
@@ -2595,8 +2868,12 @@ export function focusNode(nodeId, zoom = 2) {
     const graphData = store.graph.graphData();
     const node = graphData.nodes.find(n => n.id === nodeId);
     if (node) {
-        store.graph.centerAt(node.x, node.y, 500);
-        store.graph.zoom(zoom, 500);
+        if (is3D()) {
+            centerCamera3D(node.x, node.y, node.z || 0, 240 / zoom, 500);
+        } else {
+            store.graph.centerAt(node.x, node.y, 500);
+            store.graph.zoom(zoom, 500);
+        }
         selectNode(node);
     }
 }
@@ -2608,8 +2885,12 @@ export function zoomToFit(padding = 50) {
 export function resetView() {
     clearSelection();
     clearFilters();
-    store.graph.centerAt(0, 0, 500);
-    store.graph.zoom(1, 500);
+    if (is3D()) {
+        store.graph.zoomToFit(500, 50);
+    } else {
+        store.graph.centerAt(0, 0, 500);
+        store.graph.zoom(1, 500);
+    }
 }
 
 export function setViewMode(mode) {
@@ -2656,16 +2937,16 @@ function applyForceLayout() {
     store.graph
         .d3Force('x', null)
         .d3Force('y', null)
-        .d3Force('charge', d3.forceManyBody().strength(store.config.chargeStrength))
+        .d3Force('charge', F().forceManyBody().strength(store.config.chargeStrength))
         .d3ReheatSimulation();
 }
 
 function applyHierarchyLayout() {
     // Top-down hierarchy based on critical path depth
     store.graph
-        .d3Force('x', d3.forceX(0).strength(0.1))
-        .d3Force('y', d3.forceY(node => (node.criticalDepth || 0) * 100).strength(0.3))
-        .d3Force('charge', d3.forceManyBody().strength(-50))
+        .d3Force('x', F().forceX(0).strength(0.1))
+        .d3Force('y', F().forceY(node => (node.criticalDepth || 0) * 100).strength(0.3))
+        .d3Force('charge', F().forceManyBody().strength(-50))
         .d3ReheatSimulation();
 }
 
@@ -2673,9 +2954,9 @@ function applyRadialLayout() {
     // Radial layout from selected node or center
     const center = store.selectedNode || { x: 0, y: 0 };
     store.graph
-        .d3Force('x', d3.forceX(center.x).strength(0.05))
-        .d3Force('y', d3.forceY(center.y).strength(0.05))
-        .d3Force('radial', d3.forceRadial(
+        .d3Force('x', F().forceX(center.x).strength(0.05))
+        .d3Force('y', F().forceY(center.y).strength(0.05))
+        .d3Force('radial', F().forceRadial(
             node => (node.criticalDepth || 0) * 80,
             center.x,
             center.y
@@ -2693,9 +2974,9 @@ function applyClusterLayout() {
     };
 
     store.graph
-        .d3Force('x', d3.forceX(node => statusPositions[node.status]?.x || 0).strength(0.3))
-        .d3Force('y', d3.forceY(node => statusPositions[node.status]?.y || 0).strength(0.3))
-        .d3Force('charge', d3.forceManyBody().strength(-30))
+        .d3Force('x', F().forceX(node => statusPositions[node.status]?.x || 0).strength(0.3))
+        .d3Force('y', F().forceY(node => statusPositions[node.status]?.y || 0).strength(0.3))
+        .d3Force('charge', F().forceManyBody().strength(-30))
         .d3ReheatSimulation();
 }
 
@@ -2713,18 +2994,18 @@ function applyLabelGalaxyLayout() {
 
     // Apply forces to pull nodes toward their label's center
     store.graph
-        .d3Force('x', d3.forceX(node => {
+        .d3Force('x', F().forceX(node => {
             const label = getPrimaryLabel(node);
             const center = labelClusterState.labelCenters.get(label);
             return center ? center.x : 0;
         }).strength(0.4))
-        .d3Force('y', d3.forceY(node => {
+        .d3Force('y', F().forceY(node => {
             const label = getPrimaryLabel(node);
             const center = labelClusterState.labelCenters.get(label);
             return center ? center.y : 0;
         }).strength(0.4))
-        .d3Force('charge', d3.forceManyBody().strength(-40))
-        .d3Force('collision', d3.forceCollide().radius(node => getNodeSize(node) + 8))
+        .d3Force('charge', F().forceManyBody().strength(-40))
+        .d3Force('collision', F().forceCollide().radius(node => getNodeSize(node) + 8))
         .d3ReheatSimulation();
 
     // Show label legend
@@ -2776,15 +3057,15 @@ function applyPreset(presetName) {
     } else {
         // Reset to standard force configuration
         store.graph
-            .d3Force('link', d3.forceLink()
+            .d3Force('link', F().forceLink()
                 .id(d => d.id)
                 .distance(getLinkDistance))
-            .d3Force('charge', d3.forceManyBody()
+            .d3Force('charge', F().forceManyBody()
                 .strength(store.config.chargeStrength))
-            .d3Force('center', d3.forceCenter())
-            .d3Force('x', d3.forceX()
+            .d3Force('center', F().forceCenter())
+            .d3Force('x', F().forceX()
                 .strength(store.config.centerStrength))
-            .d3Force('y', d3.forceY()
+            .d3Force('y', F().forceY()
                 .strength(store.config.centerStrength))
             .warmupTicks(store.config.warmupTicks)
             .cooldownTicks(store.config.cooldownTicks)
@@ -2805,24 +3086,24 @@ function applyCustomForces(customForces) {
         const gridStrength = customForces.gridStrength;
 
         store.graph
-            .d3Force('x', d3.forceX(node => {
+            .d3Force('x', F().forceX(node => {
                 // Snap to nearest grid column
                 return Math.round(node.x / gridSize) * gridSize;
             }).strength(gridStrength))
-            .d3Force('y', d3.forceY(node => {
+            .d3Force('y', F().forceY(node => {
                 // Snap to nearest grid row, with depth offset
                 const depth = node.criticalDepth || 0;
                 return depth * gridSize + Math.round(node.y / gridSize) * gridSize;
             }).strength(gridStrength))
-            .d3Force('charge', d3.forceManyBody().strength(store.config.chargeStrength))
+            .d3Force('charge', F().forceManyBody().strength(store.config.chargeStrength))
             .d3ReheatSimulation();
     } else if (customForces.yStrength && customForces.depthSpacing) {
         // Compact DAG: emphasize vertical hierarchy
         store.graph
-            .d3Force('x', d3.forceX(0).strength(0.15))
-            .d3Force('y', d3.forceY(node => (node.criticalDepth || 0) * customForces.depthSpacing)
+            .d3Force('x', F().forceX(0).strength(0.15))
+            .d3Force('y', F().forceY(node => (node.criticalDepth || 0) * customForces.depthSpacing)
                 .strength(customForces.yStrength))
-            .d3Force('charge', d3.forceManyBody().strength(store.config.chargeStrength))
+            .d3Force('charge', F().forceManyBody().strength(store.config.chargeStrength))
             .d3ReheatSimulation();
     }
 }
@@ -3063,7 +3344,8 @@ function selectAndCenterNode(node) {
 
     // Center and zoom to the node
     if (typeof node.x === 'number' && typeof node.y === 'number') {
-        store.graph.centerAt(node.x, node.y, 500);
+        if (is3D()) centerCamera3D(node.x, node.y, node.z || 0, undefined, 500);
+        else store.graph.centerAt(node.x, node.y, 500);
     }
 
     // Refresh display

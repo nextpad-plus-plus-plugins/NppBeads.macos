@@ -1,0 +1,17 @@
+{
+  "name": "nppbeads-vendor-graph3d",
+  "private": true,
+  "description": "Builds resources/viewer/vendor/graph3d.min.js (3D Graph view renderer). All dependencies MIT.",
+  "scripts": {
+    "build": "esbuild entry.js --bundle --minify --format=iife --target=safari15 --legal-comments=eof --outfile=../../resources/viewer/vendor/graph3d.min.js"
+  },
+  "dependencies": {
+    "3d-force-graph": "1.80.1",
+    "d3-force-3d": "3.0.6",
+    "three": "0.187.0",
+    "three-spritetext": "1.10.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}

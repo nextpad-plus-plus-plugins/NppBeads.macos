@@ -2930,6 +2930,7 @@ function beadsApp() {
      */
     graphZoomIn() {
       if (!this.forceGraphModule || !this.forceGraphReady) return;
+      if (this.forceGraphModule.zoomBy) { this.forceGraphModule.zoomBy(1.5); return; }
       const graph = this.forceGraphModule.getGraph?.();
       if (graph && typeof graph.zoom === 'function') {
         const currentZoom = graph.zoom();
@@ -2942,6 +2943,7 @@ function beadsApp() {
      */
     graphZoomOut() {
       if (!this.forceGraphModule || !this.forceGraphReady) return;
+      if (this.forceGraphModule.zoomBy) { this.forceGraphModule.zoomBy(1 / 1.5); return; }
       const graph = this.forceGraphModule.getGraph?.();
       if (graph && typeof graph.zoom === 'function') {
         const currentZoom = graph.zoom();

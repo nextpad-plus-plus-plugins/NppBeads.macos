@@ -14,3 +14,6 @@ resources/*
 # Release zips (also attached to GitHub releases)
 dist/
 build-*/
+
+# 3D graph vendor-bundle build inputs (output is resources/viewer/vendor/graph3d.min.js)
+tools/vendor-graph3d/node_modules/

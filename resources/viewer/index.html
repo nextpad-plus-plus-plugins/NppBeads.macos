@@ -2581,8 +2581,18 @@
                var v = localStorage.getItem('nppbeads.arrowDirection');
                return (v === 'dependency' || v === 'execution') ? v : 'execution';
              } catch(_) { return 'execution'; }
+           })(),
+           graphDimension: (function(){
+             try {
+               var v = localStorage.getItem('nppbeads.graphDimension');
+               return (v === '2d' || v === '3d') ? v : '3d';
+             } catch(_) { return '3d'; }
            })()
          }"
+         x-init="document.addEventListener('bv-graph:ready', () => {
+                   if (forceGraphModule && forceGraphModule.getDimension)
+                     graphDimension = forceGraphModule.getDimension();
+                 })"
          class="fixed inset-0 z-40 bg-gray-50 dark:bg-gray-900"
          style="top: 0;">
 
@@ -2807,6 +2817,35 @@
           <!-- Graph Settings panel (condensed) -->
           <div class="bg-white/90 dark:bg-gray-800/90 backdrop-blur-sm rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 p-1.5 w-[170px]">
             <div class="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1 px-1">Display</div>
+
+            <!-- NppBeads: renderer switch. 3D (WebGL) is the default; graph.js
+                 falls back to 2D when WebGL is unavailable and setDimension()
+                 returns the dimension actually in effect. Switching rebuilds
+                 the layout from scratch, so the preset resets to Default. -->
+            <div class="flex gap-0.5 p-0.5 mb-1 rounded bg-gray-100 dark:bg-gray-700"
+                 role="group" aria-label="Graph renderer">
+              <template x-for="d in ['3d', '2d']" :key="d">
+                <button type="button"
+                        @click="
+                          if (graphDimension !== d) {
+                            currentPreset = 'default';
+                            if (forceGraphModule && forceGraphModule.setDimension) {
+                              graphDimension = forceGraphModule.setDimension(d);
+                            } else {
+                              try { localStorage.setItem('nppbeads.graphDimension', d); } catch(_) {}
+                              graphDimension = d;
+                            }
+                          }
+                        "
+                        :aria-pressed="graphDimension === d"
+                        :class="graphDimension === d
+                          ? 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 shadow-sm'
+                          : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'"
+                        class="flex-1 text-[11px] font-medium py-0.5 rounded transition-colors"
+                        :title="d === '3d' ? '3D view: drag to rotate, scroll to zoom, right-drag to pan' : '2D view'"
+                        x-text="d.toUpperCase()"></button>
+              </template>
+            </div>
 
             <!-- Heatmap toggle row (no fire icon; it confused users — that icon suggests fire-marks, not heatmap) -->
             <label class="flex items-center justify-between px-1.5 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
@@ -3844,6 +3883,9 @@
   <!-- Force-Graph dependencies (Graph view) - vendored for offline use -->
   <script src="vendor/force-graph.min.js"></script>
   <script src="vendor/d3.v7.min.js"></script>
+  <!-- 3D renderer (three.js + 3d-force-graph + three-spritetext + d3-force-3d,
+       all MIT). Built by tools/vendor-graph3d; see its entry.js. -->
+  <script src="vendor/graph3d.min.js"></script>
 
   <!-- Chart.js for interactive charts - vendored for offline use -->
   <script src="vendor/chart.umd.min.js"></script>
