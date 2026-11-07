@@ -150,14 +150,21 @@
     metaRow.appendChild(wrapField('Assignee', assigneeInput));
     body.appendChild(metaRow);
 
-    // Labels (comma-separated)
+    // Epic (parent) + labels, side by side as in the New-issue form.
+    const epicPick = buildEpicSelect(b);
     const labelsInput = el('input', {
       type: 'text',
       class: 'edit-labels',
       value: (b.labels || []).join(', '),
       placeholder: 'comma, separated, labels',
     });
-    body.appendChild(wrapField('Labels', labelsInput));
+    const epicRow = el('div', { class: 'field-row' });
+    epicRow.appendChild(el('label', { class: 'field' },
+      el('span', { class: 'field-label' }, 'Epic ',
+        el('span', { class: 'hint' }, '(parent)')),
+      epicPick.select));
+    epicRow.appendChild(wrapField('Labels', labelsInput));
+    body.appendChild(epicRow);
 
     // Description — Raw (textarea) | Markdown (rendered preview) toggle.
     // Opens in Markdown when there is something to read, Raw otherwise.
@@ -292,7 +299,9 @@
         labels:      labelsInput.value.split(',').map(s => s.trim()).filter(Boolean),
         description: descInput.value,
       });
-      if (!patch && !clearingAssignee) {
+      const nextParent = epicPick.select.value;
+      const moveEpic = nextParent !== epicPick.current;
+      if (!patch && !clearingAssignee && !moveEpic) {
         statusLine.textContent = 'no changes';
         statusLine.classList.remove('is-error');
         return;
@@ -326,7 +335,18 @@
             return;
           }
         }
-        showToast(b.id + ' updated');
+        if (moveEpic) {
+          const err = await moveToParent(b.id, epicPick.current, nextParent);
+          if (err) {
+            statusLine.textContent = err;
+            statusLine.classList.add('is-error');
+            saveBtn.disabled = false;
+            return;
+          }
+        }
+        showToast(!moveEpic ? b.id + ' updated'
+          : nextParent ? b.id + (patch || clearingAssignee ? ' updated, moved to ' : ' moved to ') + nextParent
+          : b.id + (patch || clearingAssignee ? ' updated, removed from ' : ' removed from ') + epicPick.current);
         closeBeadModal();
       } catch (err) {
         statusLine.textContent = (err && err.message) || String(err);
@@ -439,6 +459,60 @@
       section.appendChild(list);
     }
     return section;
+  }
+
+  // ── Epic (parent) picker ────────────────────────────────────────────
+  // The bead's parent is its parent-child edge (bead depends_on parent).
+  // Lists every epic (App.epicList order) except the bead itself and
+  // anything below it, which would make a cycle. A current parent that
+  // isn't an epic (a sub-task of a task) is listed too, so the select
+  // shows the truth and saving without touching it changes nothing.
+  // Returns { select, current } — current is the parent id or ''.
+  function buildEpicSelect(b) {
+    const parents = App.parentsOf(b.id);
+    const isEpic = (id) => { const x = App.beadById && App.beadById.get(id); return !!x && x.type === 'epic'; };
+    const current = parents.find(isEpic) || parents[0] || '';
+    const below = App.descendantsOf(b.id);
+    const sel = el('select', { name: 'epic', class: 'edit-epic' });
+    const add = (value, label) => {
+      const o = document.createElement('option');
+      o.value = value;
+      o.textContent = label;
+      if (value === current) o.selected = true;
+      sel.appendChild(o);
+    };
+    add('', '— none —');
+    if (current && !isEpic(current)) {
+      const p = App.beadById && App.beadById.get(current);
+      add(current, current + ' · ' + ((p && p.title) || '(not in data)') + ' (parent, not an epic)');
+    }
+    for (const e of App.epicList()) {
+      if (e.id === b.id || below.has(e.id)) continue;
+      add(e.id, e.label.length > 90 ? e.label.slice(0, 89) + '…' : e.label);
+    }
+    if (parents.length > 1) {
+      sel.title = 'This issue has ' + parents.length + ' parents: ' + parents.join(', ') +
+                  '. Changing it replaces ' + current + ' only.';
+    }
+    return { select: sel, current };
+  }
+
+  // Re-parent: add the new parent-child edge first, then drop the old
+  // one, so a failure never leaves the issue without the epic it had.
+  // Returns an error string, or null on success.
+  async function moveToParent(id, from, to) {
+    if (to) {
+      const r = await window.__nppBridge.call('depAdd',
+        { dependent: id, dependency: to, depType: 'parent-child' });
+      if (!r.ok) return 'could not add to ' + to + ': ' + (r.error || 'failed');
+    }
+    if (from) {
+      const r = await window.__nppBridge.call('depRemove',
+        { dependent: id, dependency: from });
+      if (!r.ok) return (to ? 'added to ' + to + ', but could not remove from ' : 'could not remove from ') +
+                        from + ': ' + (r.error || 'failed');
+    }
+    return null;
   }
 
   // ── Helpers for the edit modal ──────────────────────────────────────
@@ -769,8 +843,11 @@
       }
     }
 
+    // Enter / comma / Tab add what was typed. On an empty field they keep
+    // their normal meaning, so Tab still moves on (it used to be swallowed,
+    // trapping keyboard focus in the field).
     inp.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ',' || e.key === 'Tab') {
+      if ((e.key === 'Enter' || e.key === ',' || e.key === 'Tab') && inp.value.trim()) {
         e.preventDefault(); submitAdd();
       }
     });

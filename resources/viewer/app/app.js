@@ -214,6 +214,57 @@
     return (App.depIndex && App.depIndex.get(id)) || { up: [], down: [] };
   };
 
+  // ── Epic membership (parent-child edges: child depends_on parent) ──
+  // Same rules as the Graph's Epic filter (graph.js getEpicsOf).
+  //   App.parentsOf(id)     direct parents
+  //   App.epicsOf(id)       the bead itself if it is an epic, plus every
+  //                         epic up its parent chain(s); cycle-safe
+  //   App.descendantsOf(id) every bead below it, any depth; cycle-safe
+  //   App.epicList()        all epics for menus: open first, then
+  //                         closed, each by id → [{ id, label, bead }]
+  App.parentsOf = function (id) {
+    return App.depsOf(id).up.filter(e => e.type === 'parent-child').map(e => e.id);
+  };
+  App.epicsOf = function (id) {
+    const out = [];
+    const seen = new Set();
+    const queue = [id];
+    while (queue.length) {
+      const cur = queue.shift();
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      const b = App.beadById && App.beadById.get(cur);
+      if (b && b.type === 'epic') out.push(cur);
+      for (const p of App.parentsOf(cur)) queue.push(p);
+    }
+    return out;
+  };
+  App.descendantsOf = function (id) {
+    const out = new Set();
+    const queue = [id];
+    while (queue.length) {
+      const cur = queue.shift();
+      for (const e of App.depsOf(cur).down) {
+        if (e.type !== 'parent-child' || e.id === id || out.has(e.id)) continue;
+        out.add(e.id);
+        queue.push(e.id);
+      }
+    }
+    return out;
+  };
+  App.epicList = function () {
+    return (App.beads || [])
+      .filter(b => b.type === 'epic')
+      .sort((a, b) => ((a.status === 'closed') - (b.status === 'closed')) ||
+                      a.id.localeCompare(b.id, undefined, { numeric: true }))
+      .map(b => ({
+        id: b.id,
+        label: b.id + ' · ' + (b.title || '(no title)') +
+               (b.status === 'closed' ? ' (closed)' : ''),
+        bead: b,
+      }));
+  };
+
   // Blocking state from `blocks` edges, following `bd ready`: only a
   // blocker that is not closed counts.
   //   openBlockers — not-closed issues this bead waits on
