@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Beads — Board</title>
   <link rel="stylesheet" href="app.css">
+  <link rel="stylesheet" href="../facets.css">
 </head>
 <body>
   <div id="board-hdr" class="board-hdr">
@@ -16,6 +17,8 @@
               title="Promotes open/in-progress issues with open blocker deps to the Blocked column"
               aria-selected="false">Effective</button>
     </div>
+    <!-- Same facet filters as the Activity view (../facets.js, built by board.js). -->
+    <div id="board-facets" class="board-facets npp-facets"></div>
     <button id="new-issue-btn" class="new-issue-btn" type="button"
             title="Create a new issue (bd create)">+ New issue</button>
   </div>
@@ -57,6 +60,7 @@
   <script src="../vendor/dompurify.min.js"></script>
   <script src="app.js"></script>
   <script src="detail.js"></script>
+  <script src="../facets.js"></script>
   <script src="board.js"></script>
 </body>
 </html>

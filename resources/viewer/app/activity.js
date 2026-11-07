@@ -95,6 +95,13 @@
       typeLabel:     (v) => App.typeIcon(v) + ' ' + v,
       statusLabel:   (v) => App.statusColor(v).label,
       onChange:      render,
+      storageKey:    NppFacets.storageKey('activity'),
+      // Epic: an epic and everything under it (parent-child, any depth) —
+      // same menu and rule as the Graph's Epic filter.
+      epics: {
+        list: () => App.epicList(),
+        of:   (b) => App.epicsOf(b.id),
+      },
     });
 
     // Rightmost: same New-issue entry point as the Board (shared modal

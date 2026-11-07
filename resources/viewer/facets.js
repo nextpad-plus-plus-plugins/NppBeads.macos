@@ -15,6 +15,8 @@
 //       list: () => [{ id, label }], //   epics to offer, in menu order
 //       of:   (b) => [epicId, ...],  //   epics a record belongs to
 //     },
+//     storageKey: NppFacets.storageKey('activity'),  // optional — remember
+//                                    //   the selection across page loads
 //   });
 //   f.passes(b)   f.active()   f.set({ status: [...], blocked: 'ready' })
 
@@ -44,6 +46,33 @@
     let blockedMode  = 'all';
     let blockingMode = 'all';
     const syncers = [];
+
+    // Persistence. Every view is its own page, so switching views reloads
+    // the controls; with a storageKey the selection is saved on each change
+    // and restored when the controls are built.
+    const FACET_KEYS = ['epic', 'type', 'priority', 'status', 'assignee'];
+    function snapshot() {
+      const out = { blocked: blockedMode, blocking: blockingMode };
+      for (const key of FACET_KEYS) out[key] = [...sets[key]];
+      return out;
+    }
+    function applySpec(spec) {
+      spec = spec || {};
+      for (const key of FACET_KEYS) {
+        sets[key].clear();
+        for (const v of (Array.isArray(spec[key]) ? spec[key] : [])) sets[key].add(String(v));
+      }
+      blockedMode  = ['ready', 'blocked'].indexOf(spec.blocked) !== -1 ? spec.blocked : 'all';
+      blockingMode = spec.blocking === 'blockers' ? 'blockers' : 'all';
+    }
+    function save() {
+      if (!opts.storageKey) return;
+      try { localStorage.setItem(opts.storageKey, JSON.stringify(snapshot())); } catch {}
+    }
+    function changed() {
+      save();
+      opts.onChange();
+    }
 
     const valueOf = {
       type:     (b) => opts.typeOf(b) || 'task',
@@ -134,7 +163,7 @@
           set.clear();
           syncBtn();
           populate();
-          opts.onChange();
+          changed();
         });
         allRow.appendChild(allCb);
         allRow.appendChild(document.createTextNode('All'));
@@ -150,7 +179,7 @@
             if (cb.checked) set.add(v); else set.delete(v);
             allCb.checked = set.size === 0;
             syncBtn();
-            opts.onChange();
+            changed();
           });
           const lab = document.createElement('span');
           lab.className = 'filter-opt-label';
@@ -165,7 +194,20 @@
         e.stopPropagation();
         const willOpen = menu.hidden;
         closeAllMenus();
-        if (willOpen) { populate(); menu.hidden = false; wrap.classList.add('is-open'); }
+        if (willOpen) {
+          populate();
+          menu.hidden = false;
+          wrap.classList.add('is-open');
+          // Menus hang right-aligned under their button; one near the
+          // window's left edge (the Epic menu in Activity / Board) would
+          // be cut off, so it hangs left-aligned instead.
+          menu.style.left = '';
+          menu.style.right = '';
+          if (menu.getBoundingClientRect().left < 4) {
+            menu.style.right = 'auto';
+            menu.style.left = '0';
+          }
+        }
       });
 
       wrap.appendChild(btn);
@@ -198,7 +240,7 @@
           if (get() === value) return;
           setMode(value);
           sync();
-          opts.onChange();
+          changed();
         });
         buttons.push(b);
         wrap.appendChild(b);
@@ -233,6 +275,16 @@
       ['blockers', 'Blockers', 'Open issues that other open issues are waiting on'],
     ], () => blockingMode, (v) => { blockingMode = v; }));
 
+    // Restore the saved selection (before the first render; no onChange —
+    // the view renders once its data arrives).
+    if (opts.storageKey) {
+      try {
+        const raw = localStorage.getItem(opts.storageKey);
+        if (raw) applySpec(JSON.parse(raw));
+      } catch {}
+      for (const s of syncers) s();
+    }
+
     // Click anywhere outside an open filter closes it.
     document.addEventListener('click', (e) => {
       if (!e.target.closest || !e.target.closest('.filter')) closeAllMenus();
@@ -241,13 +293,8 @@
     // Replace the whole facet state (unnamed facets reset to "all") and
     // refresh the controls. Does not call onChange — the caller re-renders.
     function set(spec) {
-      spec = spec || {};
-      for (const key of ['epic', 'type', 'priority', 'status', 'assignee']) {
-        sets[key].clear();
-        for (const v of (spec[key] || [])) sets[key].add(String(v));
-      }
-      blockedMode  = ['ready', 'blocked'].indexOf(spec.blocked) !== -1 ? spec.blocked : 'all';
-      blockingMode = spec.blocking === 'blockers' ? 'blockers' : 'all';
+      applySpec(spec);
+      save();
       closeAllMenus();
       for (const s of syncers) s();
     }
@@ -255,5 +302,12 @@
     return { passes, active, set };
   }
 
-  window.NppFacets = { create, NO_ASSIGNEE };
+  // Storage key for one view's facets in the current project (the native
+  // panel injects window.__nppBeadsProjectPath on every page), so each
+  // project keeps its own epics / assignees selection.
+  function storageKey(view) {
+    return 'nppbeads.facets.v1.' + view + '.' + (window.__nppBeadsProjectPath || '');
+  }
+
+  window.NppFacets = { create, storageKey, NO_ASSIGNEE };
 })();

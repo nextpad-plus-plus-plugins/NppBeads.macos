@@ -63,7 +63,8 @@ body { display: flex; flex-direction: column; }
 .board-hdr {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px 8px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
@@ -110,6 +111,10 @@ body { display: flex; flex-direction: column; }
   cursor: pointer;
   letter-spacing: 0.02em;
 }
+/* Board facet filters (styled by ../facets.css): right-aligned, with the
+   New-issue button after them. */
+.board-facets { margin-left: auto; }
+.board-facets + .new-issue-btn { margin-left: 0; }
 .new-issue-btn:hover {
   background: var(--accent, #2563eb);
   color: #fff;

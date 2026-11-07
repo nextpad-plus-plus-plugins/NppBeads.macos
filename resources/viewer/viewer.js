@@ -3051,6 +3051,7 @@ function beadsApp() {
         typeLabel:     (v) => (TYPE_ICONS[v] || TYPE_ICONS.task) + ' ' + v,
         statusLabel:   (v) => STATUS_LABELS[v] || v,
         onChange:      () => this.applyGraphFilters(),
+        storageKey:    window.NppFacets.storageKey('graph'),
         // Epic: an epic and everything under it (parent-child, any depth).
         // Open epics first, then closed; each by id.
         epics: {

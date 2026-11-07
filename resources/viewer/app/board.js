@@ -91,10 +91,44 @@
     return base;
   }
 
+  // ── Facet filters ───────────────────────────────────────────────────
+  // The Activity view's filters (../facets.js): Epic, Type, Priority,
+  // Status, Assignee, Blocked, Blocking. A card shows only when it passes
+  // every active facet AND the search query.
+  let facets = null;
+  function filtersActive() {
+    return !!App.filter.query || (!!facets && facets.active());
+  }
+  function buildFacets() {
+    const container = document.getElementById('board-facets');
+    if (!container || !window.NppFacets) return;
+    facets = NppFacets.create({
+      container,
+      beads:         () => App.beads,
+      typeOf:        (b) => b.type,
+      priorityOf:    (b) => b.priority,
+      statusOf:      (b) => b.status,
+      assigneeOf:    (b) => b.assignedTo,
+      blockingState: (b) => {
+        const s = App.blockingState(b.id);
+        return { blockers: s.openBlockers.length, blocking: s.openBlocking.length };
+      },
+      typeLabel:     (v) => App.typeIcon(v) + ' ' + v,
+      statusLabel:   (v) => App.statusColor(v).label,
+      onChange:      () => render(),
+      storageKey:    NppFacets.storageKey('board'),
+      epics: {
+        list: () => App.epicList(),
+        of:   (b) => App.epicsOf(b.id),
+      },
+    });
+  }
+
   function groupByStatus(beads) {
     const out = { open: [], in_progress: [], blocked: [], closed: [] };
     for (const b of beads) {
       if (!App.matchesQuery(b, App.filter.query)) continue;
+      if (facets && !facets.passes(b)) continue;
       const s = effectiveStatus(b);
       if (out[s]) out[s].push(b);
     }
@@ -313,7 +347,7 @@
 
     node.querySelector('.col-title').textContent = cfg.label;
     const countEl = node.querySelector('.col-count');
-    if (App.filter.query && unfilteredCount !== items.length) {
+    if (filtersActive() && unfilteredCount !== items.length) {
       countEl.textContent = items.length + '/' + unfilteredCount;
     } else {
       countEl.textContent = String(items.length);
@@ -328,7 +362,7 @@
     if (items.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'col-empty';
-      empty.textContent = App.filter.query && unfilteredCount > 0
+      empty.textContent = filtersActive() && unfilteredCount > 0
         ? 'no match (' + unfilteredCount + ' filtered)'
         : 'no items';
       body.appendChild(empty);
@@ -400,6 +434,7 @@
     syncModeButtons();
   }
   wireModeToggle();
+  buildFacets();
 
   // ── App wiring ──────────────────────────────────────────────────────
   App.onDataLoaded = render;
