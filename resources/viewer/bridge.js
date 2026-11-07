@@ -16,7 +16,7 @@
 
   if (window.__nppBeads) return;
   const NPP = window.__nppBeads = {
-    version: 17,  // bump on every bridge.js edit to confirm the page
+    version: 18,  // bump on every bridge.js edit to confirm the page
                   // picked up the latest file (stale WebKit cache check).
     mode: 'jsonl',
     // Prefer the synchronously-preloaded JSONL (injected by BeadsPanel
@@ -85,10 +85,24 @@
     return false;
   }
 
+  // Native pushes JSONL here twice over a page's life: to answer the
+  // init-time requestJsonl() (pending resolvers), and after every data
+  // change / page load (BeadsPanel _pushJsonlToWebview, _pushJsonlToBridge).
+  // A push that changes the text after init used to be dropped, so the
+  // Dashboard / Insights / Graph kept showing the data they loaded with.
+  // Now it drops the cached DB and fires 'npp-beads:jsonl-reloaded' for
+  // the page to refresh itself (viewer.js, app/app.js).
   NPP.receiveJsonl = function (text) {
-    NPP.jsonl = text || '';
+    const next = text || '';
+    const changed = NPP.jsonl !== null && next !== NPP.jsonl;
+    NPP.jsonl = next;
+    window.__nppBeadsPreloadedJsonl = next;
     const queued = NPP.pendingJsonlResolvers.splice(0);
     queued.forEach((resolve) => resolve(NPP.jsonl));
+    if (changed && !queued.length) {
+      NPP.dbBytesPromise = null;
+      try { window.dispatchEvent(new Event('npp-beads:jsonl-reloaded')); } catch {}
+    }
   };
   NPP.receiveError = function (msg) {
     NPP.err('native error:', msg);

@@ -321,6 +321,7 @@
   };
 
   App.load = function (jsonl) {
+    App.loadedJsonl = (typeof jsonl === 'string') ? jsonl : '';
     App.beads = parseJsonl(jsonl);
     App.beadById = new Map(App.beads.map(b => [b.id, b]));
     App.depIndex = buildDepIndex(App.beads);
@@ -333,6 +334,17 @@
     App.load(jsonl);
     if (typeof App.onRefresh === 'function') App.onRefresh();
   };
+
+  // A page loaded by an in-page link (Graph → Activity, a Dashboard issue
+  // link) starts from the JSONL that was current when native last
+  // installed its user script, which can be older than the database.
+  // Native pushes the current text right after every load
+  // (BeadsPanel _pushJsonlToBridge → bridge.js receiveJsonl); take it
+  // when it differs from what this page rendered.
+  window.addEventListener('npp-beads:jsonl-reloaded', function () {
+    const t = window.__nppBeads && window.__nppBeads.jsonl;
+    if (typeof t === 'string' && t !== App.loadedJsonl) App.reload(t);
+  });
 
   App.setFilter = function (f) {
     App.filter = Object.assign({ query: '' }, f || {});

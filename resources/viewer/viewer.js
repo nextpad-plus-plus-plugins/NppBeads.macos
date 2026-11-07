@@ -2624,6 +2624,9 @@ function beadsApp() {
         openInActivity({ open: nodeId });
       });
 
+      // NppBeads: native pushed newer data (bd wrote) — refresh in place.
+      window.addEventListener('npp-beads:jsonl-reloaded', () => this.refreshLiveData());
+
       try {
         this.loadingMessage = 'Loading sql.js WebAssembly...';
         await loadDatabase((msg) => {
@@ -2658,20 +2661,7 @@ function beadsApp() {
             });
         }
 
-        this.topPicks = getTopPicks(5);
-        this.recentIssues = getRecentIssues(10);
-        this.topByPageRank = getTopByPageRank(10);
-        this.topByTriageScore = getTopByTriageScore(10);
-        this.topBlockers = getTopBlockers(10);
-
-        // Dashboard data
-        this.quickWins = getQuickWins(5);
-        this.blockersToClose = getBlockersToClose(5);
-        this.distributionByType = getDistributionByType();
-        this.distributionByPriority = getDistributionByPriority();
-
-        // Load filter options for dropdowns
-        this.filterOptions = getFilterOptions();
+        this._loadDashboardData();
 
         // Load issues for list view (initial data)
         this.loadIssues();
@@ -2685,19 +2675,7 @@ function beadsApp() {
         this.loadingMessage = 'Loading graph engine...';
         this.graphReady = await initGraphEngine();
         DIAGNOSTICS.graphWasm = this.graphReady;
-        if (this.graphReady) {
-          this.topKSet = getTopKSet(5);
-          this.topByBetweenness = getTopByBetweenness(10);
-          this.topByCriticalPath = getTopByCriticalPath(10);
-          this.cycleInfo = getCycleInfo();
-          this.topImpactIssues = topWhatIf(10);
-          // Additional TUI-style metrics
-          this.topByHITSHub = getTopByHITSHub(10);
-          this.topByHITSAuth = getTopByHITSAuth(10);
-          this.topByKCore = getTopByKCore(10);
-          this.articulationPoints = getArticulationPoints();
-          this.criticalPathSlack = getIssuesBySlack(10, true); // Zero slack = critical path
-        }
+        this._loadGraphMetricsData();
 
         // Listen for hash changes (browser back/forward)
         window.addEventListener('hashchange', () => this.handleHashChange());
@@ -2749,6 +2727,7 @@ function beadsApp() {
         }
 
         this.loading = false;
+        if (this._liveRefreshPending) this.refreshLiveData();
       } catch (err) {
         console.error('Init failed:', err);
         this.error = err.message || 'Failed to load database';
@@ -3100,6 +3079,24 @@ function beadsApp() {
       mod.setFacetPredicate(facetsOn ? (b) => graphFacets.passes(b) : null);
       const q = (this.graphQuery || '').trim();
       const res = mod.searchAndIsolate(q);
+      this.updateGraphSummary(res);
+      if (fit && res.visible > 0) {
+        // Re-fit after the next tick so the simulation has coordinates.
+        setTimeout(() => {
+          const graph = mod.getGraph?.();
+          if (graph && typeof graph.zoomToFit === 'function') graph.zoomToFit(400, 40);
+        }, 150);
+      }
+    },
+
+    /**
+     * NppBeads: the toolbar's "N of M shown" line and the open / deferred /
+     * closed counts, from a searchAndIsolate()/refreshData() result.
+     */
+    updateGraphSummary(res) {
+      const mod = this.forceGraphModule;
+      const facetsOn = !!graphFacets && graphFacets.active();
+      const q = (this.graphQuery || '').trim();
       const issues = mod.getIssues() || [];
       const total = issues.length;
       const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
@@ -3122,13 +3119,121 @@ function beadsApp() {
       const closed   = shown.filter(n => n.status === 'closed').length;
       const deferred = shown.filter(n => n.status === 'deferred').length;
       this.graphShown = { open: shown.length - closed - deferred, deferred, closed };
-      if (fit && res.visible > 0) {
-        // Re-fit after the next tick so the simulation has coordinates.
-        setTimeout(() => {
-          const graph = mod.getGraph?.();
-          if (graph && typeof graph.zoomToFit === 'function') graph.zoomToFit(400, 40);
-        }, 150);
+    },
+
+    /**
+     * NppBeads: Dashboard lists and counts, from the current DB. Run at
+     * init and on every live refresh.
+     */
+    _loadDashboardData() {
+      this.meta = getMeta();
+      this.stats = getStats();
+      this.topPicks = getTopPicks(5);
+      this.recentIssues = getRecentIssues(10);
+      this.topByPageRank = getTopByPageRank(10);
+      this.topByTriageScore = getTopByTriageScore(10);
+      this.topBlockers = getTopBlockers(10);
+
+      // Dashboard data
+      this.quickWins = getQuickWins(5);
+      this.blockersToClose = getBlockersToClose(5);
+      this.distributionByType = getDistributionByType();
+      this.distributionByPriority = getDistributionByPriority();
+
+      // Load filter options for dropdowns
+      this.filterOptions = getFilterOptions();
+    },
+
+    /**
+     * NppBeads: Insights metrics from the WASM graph engine. Run at init and
+     * on every live refresh (after the engine is rebuilt).
+     */
+    _loadGraphMetricsData() {
+      if (!this.graphReady) return;
+      this.topKSet = getTopKSet(5);
+      this.topByBetweenness = getTopByBetweenness(10);
+      this.topByCriticalPath = getTopByCriticalPath(10);
+      this.cycleInfo = getCycleInfo();
+      this.topImpactIssues = topWhatIf(10);
+      // Additional TUI-style metrics
+      this.topByHITSHub = getTopByHITSHub(10);
+      this.topByHITSAuth = getTopByHITSAuth(10);
+      this.topByKCore = getTopByKCore(10);
+      this.articulationPoints = getArticulationPoints();
+      this.criticalPathSlack = getIssuesBySlack(10, true); // Zero slack = critical path
+    },
+
+    /**
+     * NppBeads: live refresh. bridge.js fires 'npp-beads:jsonl-reloaded'
+     * when native pushes changed data (a status change in bd, another
+     * agent's write). This page used to keep the data it loaded with, so
+     * the Graph showed old statuses until the view was switched. Rebuild
+     * the DB and everything derived from it in place; the Graph keeps its
+     * layout, camera and filters (graph.js refreshData). Pushes that land
+     * while a refresh (or init) runs are coalesced into one more pass.
+     */
+    async refreshLiveData() {
+      if (this.loading || this.error || this._liveRefreshRunning) {
+        this._liveRefreshPending = true;
+        return;
       }
+      this._liveRefreshRunning = true;
+      try {
+        do {
+          this._liveRefreshPending = false;
+          await this._reloadLiveData();
+        } while (this._liveRefreshPending);
+      } catch (err) {
+        console.warn('[NppBeads] live refresh failed:', err);
+      } finally {
+        this._liveRefreshRunning = false;
+      }
+    },
+
+    async _reloadLiveData() {
+      // bridge.js serves ./beads.sqlite3 synthesized from the newest JSONL.
+      const SQL = await initSqlJs();
+      const resp = await fetch('./beads.sqlite3');
+      if (!resp.ok) throw new Error('database fetch failed: ' + resp.status);
+      const fresh = new SQL.Database(new Uint8Array(await resp.arrayBuffer()));
+      const old = DB_STATE.db;
+      DB_STATE.db = fresh;
+      if (old && old !== fresh) { try { old.close(); } catch {} }
+
+      this._loadDashboardData();
+      DIAGNOSTICS.issueCount = this.stats.total || 0;
+      if (this.graphReady) {
+        cleanupWasm();
+        this.graphReady = await initGraphEngine();
+        DIAGNOSTICS.graphWasm = this.graphReady;
+      }
+      this._loadGraphMetricsData();
+
+      const ghd = getGraphViewData();
+      if (window.bvCharts) {
+        try { window.bvCharts.update(ghd.issues, ghd.dependencies); }
+        catch (e) { console.warn('[Charts] update failed:', e); }
+      }
+      if (this.triageData) {
+        try {
+          this.triageData.project_health = computeProjectHealth(
+            ghd.issues, ghd.dependencies, this.cycleInfo, this.graphReady);
+        } catch (e) { console.warn('[Viewer] project_health compute failed:', e); }
+      }
+
+      const mod = this.forceGraphModule;
+      if (this.forceGraphReady && mod && typeof mod.refreshData === 'function') {
+        const res = mod.refreshData(ghd.issues, ghd.dependencies, ghd.hierarchy);
+        if (res) this.updateGraphSummary(res);
+        if (this.graphDetailNode) {
+          const id = this.graphDetailNode.id;
+          const nodes = mod.getGraph?.()?.graphData?.().nodes || [];
+          const n = nodes.find(x => x.id === id);
+          if (n) this.graphDetailNode = n;
+          else if (!ghd.issues.some(i => i.id === id)) this.graphDetailNode = null;
+        }
+      }
+      console.log('[NppBeads] live refresh: ' + ghd.issues.length + ' issues');
     },
 
     /**

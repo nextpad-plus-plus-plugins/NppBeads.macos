@@ -2836,6 +2836,7 @@ export function search(term) {
 // matches PLUS their 1-level direct neighbors (both directions). Pass an
 // empty/nullish term to clear isolation and re-show everything.
 export function searchAndIsolate(term) {
+    store.isolateTerm = (term && term.trim()) ? term : null;
     if (!term || !term.trim()) {
         store.isolateNodes = null;
         const graphData = prepareGraphData();
@@ -2917,6 +2918,77 @@ export function getBlockingState(id) {
 
 export function getIssues() {
     return store.issues;
+}
+
+// NppBeads: live refresh — bd wrote while the graph was on screen. Like
+// loadData(), but keeps what the user is looking at: issues that still
+// exist keep their positions (a status change just recolours the node),
+// and the camera, selection, Find-node isolation and facet filters stay.
+// Returns the same shape as searchAndIsolate() for the toolbar summary.
+export function refreshData(issues, dependencies, hierarchy) {
+    if (!store.graph) return null;
+    const carry = new Map();
+    for (const n of (store.graph.graphData().nodes || [])) carry.set(n.id, n);
+
+    setHierarchy(hierarchy);
+    store.issues = issues;
+    store.dependencies = dependencies;
+    store.nodeMap.clear();
+    store.nodeIndexMap.clear();
+    issues.forEach((issue, idx) => {
+        store.nodeMap.set(issue.id, issue);
+        store.nodeIndexMap.set(issue.id, idx);
+    });
+    if (store.wasmReady) {
+        buildWasmGraph();
+        computeMetrics();
+    }
+    buildLabelColorMap();
+
+    // Re-run the Find-node isolation on the new data (titles may have
+    // changed, issues may have come or gone).
+    let matches = 0, ids = [];
+    if (store.isolateTerm) {
+        const q = store.isolateTerm.toLowerCase().trim();
+        const matchIds = new Set();
+        for (const issue of store.issues) {
+            const hay = (issue.id + ' ' + (issue.title || '') +
+                         ' ' + (issue.description || '')).toLowerCase();
+            if (hay.includes(q)) matchIds.add(issue.id);
+        }
+        const keep = new Set(matchIds);
+        for (const d of store.dependencies) {
+            if (matchIds.has(d.issue_id))      keep.add(d.depends_on_id);
+            if (matchIds.has(d.depends_on_id)) keep.add(d.issue_id);
+        }
+        store.isolateNodes = keep;
+        matches = matchIds.size;
+        ids = [...matchIds];
+    }
+
+    const graphData = prepareGraphData();
+    for (const n of graphData.nodes) {
+        const o = carry.get(n.id);
+        if (!o) continue;
+        for (const k of ['x', 'y', 'z', 'vx', 'vy', 'vz']) {
+            if (typeof o[k] === 'number') n[k] = o[k];
+        }
+        if (o.fx != null) n.fx = o.fx;
+        if (o.fy != null) n.fy = o.fy;
+        if (o.fz != null) n.fz = o.fz;
+    }
+    if (store.selectedNode) {
+        store.selectedNode = graphData.nodes.find(n => n.id === store.selectedNode.id) || null;
+    }
+    store.hoveredNode = null;
+    store.graph.graphData(graphData);
+    computeMaxMetrics();
+    if (is3D()) refresh3D(); else refreshGraph();
+    dispatchEvent('dataRefreshed', {
+        nodeCount: graphData.nodes.length,
+        linkCount: graphData.links.length,
+    });
+    return { matches, visible: graphData.nodes.length, ids };
 }
 
 // NppBeads: the parent-child hierarchy (Epic Flow + the Epic filter). Call
