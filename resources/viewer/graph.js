@@ -267,6 +267,9 @@ const DEFAULT_EXPORT_PRESET = 'spread';
 // STATE MANAGEMENT
 // ============================================================================
 
+const TITLES_KEY = 'nppbeads.graph.showTitles';
+const TITLE_MAX = 50;   // longest title shown under a node, "..." included
+
 class GraphStore {
     constructor() {
         this.graph = null;
@@ -337,6 +340,11 @@ class GraphStore {
             // NppBeads: fire glyphs on P0/P1 nodes. On by default; users
             // can turn off from the graph settings panel.
             showFireMarks: true,
+            // NppBeads: issue title as a second label line under the id.
+            // Off by default; remembered (Display panel "Titles").
+            showTitles: (() => {
+                try { return localStorage.getItem(TITLES_KEY) === 'true'; } catch (_) { return false; }
+            })(),
         };
         // NppBeads: when non-null, only these node IDs (plus their direct
         // neighbors) are shown — driven by the Find-node search. null
@@ -528,9 +536,15 @@ function build3DNode(node) {
     label.fontFace = "'Inter', -apple-system, sans-serif";
     label.fontWeight = '500';
     label.material.depthWrite = false;
+    const titleLabel = new window.SpriteText('', 2.8);
+    titleLabel.fontFace = label.fontFace;
+    titleLabel.fontWeight = '400';
+    titleLabel.material.depthWrite = false;
     group.add(mesh);
     group.add(label);
-    node.__npp3d = { mesh, label, text: null, textColor: null };
+    group.add(titleLabel);
+    node.__npp3d = { mesh, label, text: null, textColor: null,
+                     titleLabel, titleText: null, titleColor: null };
     update3DNode(node);
     return group;
 }
@@ -568,6 +582,15 @@ function update3DNode(node) {
     o.label.visible = store.config.showLabels;
     o.label.material.opacity = opacity * 0.85;
     o.label.position.y = -(size + 4);
+
+    // Title line under the id (Display panel "Titles").
+    const title = truncate(node.title || '', TITLE_MAX) || '';
+    const showTitle = store.config.showLabels && store.config.showTitles && !!title;
+    if (showTitle && o.titleText !== title) { o.titleLabel.text = title; o.titleText = title; }
+    if (o.titleColor !== THEME.fg) { o.titleLabel.color = THEME.fg; o.titleColor = THEME.fg; }
+    o.titleLabel.visible = showTitle;
+    o.titleLabel.material.opacity = opacity * 0.65;
+    o.titleLabel.position.y = -(size + 4 + 4.2);
 }
 
 function getLinkWidth3D(link) {
@@ -1667,14 +1690,16 @@ function drawNode(node, ctx, globalScale) {
         ctx.fillStyle = THEME.fg;
         ctx.globalAlpha = opacity * 0.85;
 
-        // Show title when zoomed in enough for it to be readable
-        let label = node.id;
-        if (globalScale > 1.5) {
-            label = truncate(node.title || node.id, 30);
-        } else if (globalScale > 1.0) {
-            label = truncate(node.title || node.id, 20);
+        // NppBeads: the id is always the label (it used to give way to a
+        // short title when zoomed in); the Display panel's "Titles" adds the
+        // title as a second line under it.
+        ctx.fillText(node.id, node.x, node.y + size + 3);
+        if (store.config.showTitles && node.title) {
+            const titleSize = fontSize * 0.85;
+            ctx.font = `400 ${titleSize}px 'Inter', 'JetBrains Mono', sans-serif`;
+            ctx.globalAlpha = opacity * 0.65;
+            ctx.fillText(truncate(node.title, TITLE_MAX), node.x, node.y + size + 3 + fontSize * 1.2);
         }
-        ctx.fillText(label, node.x, node.y + size + 3);
     }
 
     ctx.restore();
@@ -3031,6 +3056,15 @@ export function setFireMarksEnabled(enabled) {
     store.config.showFireMarks = !!enabled;
     if (store.graph) refreshGraph();
 }
+
+// NppBeads: issue titles under the id labels (2D and 3D). Remembered.
+export function setTitlesEnabled(enabled) {
+    store.config.showTitles = !!enabled;
+    try { localStorage.setItem(TITLES_KEY, store.config.showTitles ? 'true' : 'false'); } catch (_) {}
+    if (!store.graph) return;
+    if (is3D()) refresh3D(); else refreshGraph();
+}
+export function getTitlesEnabled() { return store.config.showTitles; }
 
 export function setParticlesEnabled(enabled) {
     store.config.enableParticles = !!enabled;

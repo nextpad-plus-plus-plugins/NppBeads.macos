@@ -2654,6 +2654,16 @@
                      @change="toggleGraphParticles()">
             </label>
 
+            <!-- Issue titles under the id labels -->
+            <label class="flex items-center justify-between px-1.5 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
+                   title="Show each issue's title under its id">
+              <span class="text-[11px] text-gray-700 dark:text-gray-300">Titles</span>
+              <input type="checkbox"
+                     class="w-3.5 h-3.5 accent-sky-500"
+                     :checked="graphShowTitles"
+                     @change="toggleGraphTitles()">
+            </label>
+
             <!-- NppBeads: arrow-direction dropdown. Sits above the View
                  dropdown per user request (no divider between them).
                    Execution Flow  = prereq → dependent (temporal, default).

@@ -2443,6 +2443,10 @@ function beadsApp() {
     // Alpine root drives them, the graph module applies them.
     graphShowFireMarks: true,
     graphShowParticles: false,
+    // Issue titles under the id labels; graph.js remembers the choice.
+    graphShowTitles: (() => {
+      try { return localStorage.getItem('nppbeads.graph.showTitles') === 'true'; } catch { return false; }
+    })(),
 
     // Critical path highlighting
     showCriticalPath: false,
@@ -3730,6 +3734,14 @@ function beadsApp() {
       this.graphShowFireMarks = !this.graphShowFireMarks;
       if (this.forceGraphModule?.setFireMarksEnabled) {
         this.forceGraphModule.setFireMarksEnabled(this.graphShowFireMarks);
+      }
+    },
+
+    // NppBeads: toggle issue titles under the id labels.
+    toggleGraphTitles() {
+      this.graphShowTitles = !this.graphShowTitles;
+      if (this.forceGraphModule?.setTitlesEnabled) {
+        this.forceGraphModule.setTitlesEnabled(this.graphShowTitles);
       }
     },
 
