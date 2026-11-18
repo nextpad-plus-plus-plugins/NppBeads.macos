@@ -172,7 +172,14 @@ body { display: flex; flex-direction: column; }
   min-width: 120px;
 }
 .chip-input input:focus { outline: none !important; }
-.modal-edit { width: min(640px, 94vw); max-height: 88vh; }
+.modal-card.modal-edit {
+  width: min(640px, 94vw);
+  max-width: 94vw;
+  max-height: 88vh;
+}
+.modal-card.modal-edit.modal-wide { width: 94vw; }
+.modal-widen { margin-left: auto; }
+.modal-widen + .modal-close { margin-left: 0; }
 .modal-edit .modal-body { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; }
 .modal-edit .field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
 .modal-edit .field-label { color: var(--text-muted); font-size: 11px; letter-spacing: 0.02em; }

@@ -17,6 +17,9 @@
 
   const App = window.__nppApp;
   if (!App) { console.error('[Detail] app.js not loaded'); return; }
+  const WIDE_KEY = 'nppbeads.detail.wide';
+  let detailWide = false;
+  try { detailWide = localStorage.getItem(WIDE_KEY) === 'true'; } catch {}
   // Find the original JSONL record for a bead id (has the full
   // description, dependencies, timestamps) — App.beads only has the
   // normalized subset, but the raw deps are on `.deps`.
@@ -80,7 +83,7 @@
       return;
     }
 
-    const card = el('div', { class: 'modal-card modal-edit' });
+    const card = el('div', { class: 'modal-card modal-edit' + (detailWide ? ' modal-wide' : '') });
 
     // Header: type icon + id + close button
     const hdr = el('div', { class: 'modal-hdr' });
@@ -96,6 +99,17 @@
       class: 'pill modal-pill',
       style: 'background:' + pr.color + ';color:#fff',
     }, pr.label));
+    const widenBtn = el('button', {
+      type: 'button', class: 'btn btn-secondary modal-widen',
+      'aria-pressed': String(detailWide),
+    }, detailWide ? 'Restore' : 'Widen');
+    widenBtn.addEventListener('click', () => {
+      detailWide = card.classList.toggle('modal-wide');
+      widenBtn.textContent = detailWide ? 'Restore' : 'Widen';
+      widenBtn.setAttribute('aria-pressed', String(detailWide));
+      try { localStorage.setItem(WIDE_KEY, String(detailWide)); } catch {}
+    });
+    hdr.appendChild(widenBtn);
     const closeBtn = el('button', {
       class: 'modal-close',
       'aria-label': 'Close',
