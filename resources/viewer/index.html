@@ -2545,6 +2545,15 @@
                  x-html="graphDetailNode?.description ? (typeof marked !== 'undefined' ? marked.parse(graphDetailNode.description) : graphDetailNode.description) : '<p class=\'text-gray-400 dark:text-gray-500 italic\'>No description available</p>'">
             </div>
           </div>
+          <template x-for="field in [{key: 'design', label: 'Design'}, {key: 'acceptance_criteria', label: 'Acceptance Criteria'}, {key: 'notes', label: 'Notes'}]" :key="field.key">
+            <details open x-show="graphDetailNode?.[field.key]?.trim()" :aria-label="field.label"
+                     class="border-t border-gray-200 dark:border-gray-700 pt-5">
+              <summary class="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium mb-3" x-text="field.label"></summary>
+              <div class="prose prose-sm dark:prose-invert max-w-none bg-gray-50/50 dark:bg-gray-900/30 rounded-lg p-4 border border-gray-100 dark:border-gray-700/50"
+                   style="max-height: 360px; overflow: auto"
+                   x-html="renderBeadField(graphDetailNode?.[field.key] || '', renderMarkdown)"></div>
+            </details>
+          </template>
         </div>
 
         <!-- Detail Footer -->
@@ -3433,6 +3442,7 @@
   <script src="facets.js"></script>
 
   <!-- Viewer application -->
+  <script src="field-content.js"></script>
   <script src="viewer.js"></script>
 </body>
 </html>
