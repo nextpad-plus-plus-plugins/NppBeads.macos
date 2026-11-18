@@ -1047,12 +1047,15 @@ function parseLabelsJSON(labelsStr) {
 
 function getGraphViewData() {
   const issues = execQuery(`
-    SELECT id, title, description, status, priority, issue_type, assignee, labels, created_at, updated_at
+    SELECT id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, assignee, labels, created_at, updated_at
     FROM issues
   `).map(row => ({
     id: row.id,
     title: row.title || '',
     description: row.description || '',
+    design: row.design || '',
+    acceptance_criteria: row.acceptance_criteria || '',
+    notes: row.notes || '',
     status: row.status || 'open',
     priority: row.priority ?? 2,
     type: row.issue_type || 'task',

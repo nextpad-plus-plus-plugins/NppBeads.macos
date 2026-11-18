@@ -533,6 +533,12 @@ body { display: flex; flex-direction: column; }
   margin: 0.7em 0;
 }
 .md-body pre code { background: transparent; color: inherit; padding: 0; font-weight: 400; }
+.md-body pre.bead-json, .md-body pre.bead-json code {
+  font-size: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.md-body pre.bead-json { font-size: 0.92em; }
 .md-body a { color: var(--md-link); font-weight: 500; text-decoration: none; }
 .md-body a:hover { color: var(--md-quote); text-decoration: underline; }
 .md-body ul, .md-body ol { margin: 0.5em 0 0.7em; padding-left: 1.5em; }

@@ -176,6 +176,18 @@
       initial: descInput.value.trim() ? 'markdown' : 'raw',
     }));
 
+    for (const [key, label] of [
+      ['design', 'Design'],
+      ['acceptance_criteria', 'Acceptance Criteria'],
+      ['notes', 'Notes'],
+    ]) {
+      if (!b[key].trim()) continue;
+      const content = el('div', { class: 'md-body md-preview' });
+      content.innerHTML = renderBeadField(b[key], App.renderMarkdown);
+      body.appendChild(el('details', { class: 'field', open: '', 'aria-label': label },
+        el('summary', { class: 'field-label' }, label), content));
+    }
+
     body.appendChild(buildMetrics(b.id));
     if (b.status !== 'closed') body.appendChild(buildWhatIf(b.id));
 
