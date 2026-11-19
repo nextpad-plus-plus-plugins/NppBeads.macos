@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(NppBeads VERSION 1.0.1 LANGUAGES CXX OBJCXX)
+project(NppBeads VERSION 1.0.2 LANGUAGES CXX OBJCXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_OBJCXX_STANDARD 17)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
@@ -84,7 +84,7 @@ endif()
 #  Target 2 — Beads.app (standalone macOS app, same code)
 # ─────────────────────────────────────────────────────────────────────────
 if(NPPBEADS_BUILD_APP)
-    set(BEADS_APP_VERSION "1.0.1")
+    set(BEADS_APP_VERSION "1.0.2")
 
     # Walk resources/viewer/ and resources/beads.icns recursively, register
     # each file as a target source with MACOSX_PACKAGE_LOCATION pointing
