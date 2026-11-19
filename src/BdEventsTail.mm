@@ -1,7 +1,42 @@
 #import "BdEventsTail.h"
 
+#import <libproc.h>
+#import <signal.h>
+#import <sys/sysctl.h>
+
 // All mutable state is confined to the MAIN queue. NSTask handlers run on
 // arbitrary queues and hop to main before touching anything.
+
+// ─────────────────────────────────────────────────────────────────────
+//  Orphan sweep (nppmac-8n1). The spawned child lives in its own process
+//  group, so nothing kills it when this process dies abruptly (crash,
+//  force-quit, SIGKILL) — it would tail the workspace journal forever,
+//  holding the DB gate locks and burning CPU/RAM. We persist each child's
+//  pid per workspace and, on the next spawn for that workspace, reap any
+//  previous child that is still alive.
+
+static NSString *tailPidDefaultsKey(NSString *projectDir) {
+    return [@"NppBeadsEventsTailPid." stringByAppendingString:
+            projectDir.stringByStandardizingPath];
+}
+
+// True only when `pid` is alive, has been orphaned to launchd (ppid 1),
+// and runs the bd/beads executable. The triple check makes a false kill
+// effectively impossible: a recycled pid fails the exe test, and a live
+// sibling shell's healthy tailer fails the ppid test (its parent is that
+// shell, not launchd).
+static BOOL isOrphanedBdProcess(pid_t pid) {
+    if (pid <= 1 || kill(pid, 0) != 0) return NO;
+    struct kinfo_proc kp;
+    size_t len = sizeof(kp);
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
+    if (sysctl(mib, 4, &kp, &len, NULL, 0) != 0 || len == 0) return NO;
+    if (kp.kp_eproc.e_ppid != 1) return NO;
+    char path[PROC_PIDPATHINFO_MAXSIZE] = {0};
+    if (proc_pidpath(pid, path, sizeof(path)) <= 0) return NO;
+    NSString *exe = [NSString stringWithUTF8String:path].lastPathComponent;
+    return [exe isEqualToString:@"bd"] || [exe isEqualToString:@"beads"];
+}
 
 @implementation BdEventsTail {
     NSString       *_bdPath;
@@ -71,6 +106,17 @@
 
 // ─────────────────────────────────────────────────────────────────────
 - (void)_spawn {
+    // Reap a tailer leaked by a previous run of this workspace (crash /
+    // force-quit path — the clean path is shutdownLiveSync). Must happen
+    // BEFORE launching the new child so we can never match it.
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSString *pidKey = tailPidDefaultsKey(_projectDir);
+    pid_t prev = (pid_t)[ud integerForKey:pidKey];
+    if (prev > 0 && isOrphanedBdProcess(prev)) {
+        NSLog(@"[NppBeads] reaping orphaned events tail from a previous run (pid=%d)", prev);
+        kill(prev, SIGTERM);
+    }
+
     uint64_t since = MAX(_lastSeq, _sinceSeq);
     NSTask *task = [[NSTask alloc] init];
     task.executableURL = [NSURL fileURLWithPath:_bdPath];
@@ -137,6 +183,11 @@
         return;
     }
     _task = task;
+    // Record the child for the next run's orphan sweep. Deliberately NOT
+    // cleared in -stop: a stale entry is harmless (the sweep's alive/
+    // orphan/exe checks reject it), but keeping it covers a terminate
+    // that never lands.
+    [ud setInteger:task.processIdentifier forKey:pidKey];
     NSLog(@"[NppBeads] events tail started (since=%llu, pid=%d)",
           since, task.processIdentifier);
 }

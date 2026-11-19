@@ -95,6 +95,15 @@ typedef NS_ENUM(NSInteger, BeadsThemePref) {
 // Reread JSONL from disk and ask the viewer to rehydrate.
 - (void)reloadData;
 
+// Stop live sync NOW: terminates the `bd events tail --follow` child and
+// the 2s poll. MUST be called on host shutdown (NPPN_SHUTDOWN / app
+// terminate): at process exit AppKit does not dealloc retained view
+// hierarchies, so -dealloc's stop never runs, and the NSTask child lives
+// in its own process group — it would outlive the app and poll the
+// workspace DB forever (nppmac-8n1). Idempotent; the panel also invokes
+// it itself on NSApplicationWillTerminateNotification as a safety net.
+- (void)shutdownLiveSync;
+
 // Reset to Dashboard + clear search before the panel becomes visible.
 // Called by NppBeads.mm on each show transition so re-opening doesn't
 // inherit whatever view/search state the user was last in.

@@ -154,7 +154,24 @@ static const CGFloat kBeadsZoomStep    = 0.10;
     [self _refreshThemeButton];
     [self _loadViewer];
     [self _refreshStatusBar];
+
+    // Safety net for the shells that forget (or never get) an explicit
+    // shutdownLiveSync call: the bd events-tail child must not outlive
+    // the app (nppmac-8n1). -dealloc is NOT reliable here — AppKit skips
+    // view-hierarchy teardown at process exit.
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self selector:@selector(shutdownLiveSync)
+               name:NSApplicationWillTerminateNotification object:nil];
     return self;
+}
+
+// Stop live sync now (see header). Safe to call repeatedly, from
+// NPPN_SHUTDOWN, app-will-terminate, or both.
+- (void)shutdownLiveSync {
+    [_poll stop];
+    _poll = nil;
+    [_tail stop];
+    _tail = nil;
 }
 
 // ─────────────────────────────────────────────────────────────────────────

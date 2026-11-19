@@ -600,6 +600,12 @@ extern "C" NPP_EXPORT void beNotified(SCNotification *n) {
             }
             break;
         case NPPN_SHUTDOWN:
+            // Kill the live-sync children FIRST: `sPanel = nil` below does
+            // not dealloc the panel (the view hierarchy still retains it,
+            // and AppKit skips teardown at exit), so without this the
+            // `bd events tail --follow` NSTask — which sits in its own
+            // process group — survives every app quit (nppmac-8n1).
+            [sPanel shutdownLiveSync];
             if (sIndicator) {
                 [sIndicator clearAll];
                 sIndicator = nil;
