@@ -68,5 +68,11 @@
             <string>Alternate</string>
         </dict>
     </array>
+    <!-- Remote read-only mode (nppmac-0th/nppmac-iik): fetching
+         .beads/issues.jsonl from a self-hosted forge on the local
+         network (e.g. a LAN Gitea) triggers macOS's Local Network
+         consent; this string is shown in that prompt. -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Beads connects to self-hosted git servers on your local network to monitor remote beads projects.</string>
 </dict>
 </plist>

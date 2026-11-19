@@ -1746,20 +1746,27 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
     NSAlert *a = [[NSAlert alloc] init];
     a.messageText = @"Connect to Remote Repository";
     a.informativeText =
-        @"Monitors a repository's .beads/issues.jsonl over HTTPS — "
-        @"read-only, refreshed every minute.\n\n"
-        @"Private GitHub repositories need a fine-grained personal access "
-        @"token with “Contents: Read-only” permission "
-        @"(github.com ▸ Settings ▸ Developer settings). The token "
-        @"is kept in your Keychain.";
+        @"Monitors a repository's .beads/issues.jsonl over HTTP(S) — "
+        @"read-only, refreshed every minute. GitHub repos, self-hosted "
+        @"Gitea/Forgejo repo URLs, and direct raw-file URLs all work.\n\n"
+        @"Private repositories need an access token (GitHub: fine-grained "
+        @"PAT with “Contents: Read-only”; Gitea: any API token). "
+        @"The token is kept in your Keychain.";
     [a addButtonWithTitle:@"Connect"];
     [a addButtonWithTitle:@"Cancel"];
 
-    const CGFloat W = 340, H = 24, GAP = 6;
-    NSView *box = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, W, 3*H + 2*GAP)];
+    // The URL row is a 3-line wrapping field so long self-hosted URLs
+    // stay fully visible while being reviewed (nppmac-iik).
+    const CGFloat W = 460, H = 24, GAP = 6, URLH = 54;
+    NSView *box = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, W, URLH + 2*(H+GAP))];
     NSTextField *urlField = [[NSTextField alloc] initWithFrame:
-                             NSMakeRect(0, 2*(H+GAP), W, H)];
-    urlField.placeholderString = @"github.com/owner/repo — or a raw issues.jsonl URL";
+                             NSMakeRect(0, 2*(H+GAP), W, URLH)];
+    urlField.placeholderString =
+        @"github.com/owner/repo · http(s)://host/owner/repo · raw issues.jsonl URL";
+    ((NSTextFieldCell *)urlField.cell).usesSingleLineMode = NO;
+    ((NSTextFieldCell *)urlField.cell).wraps = YES;
+    ((NSTextFieldCell *)urlField.cell).scrollable = NO;
+    ((NSTextFieldCell *)urlField.cell).lineBreakMode = NSLineBreakByCharWrapping;
     NSTextField *branchField = [[NSTextField alloc] initWithFrame:
                                 NSMakeRect(0, H+GAP, W, H)];
     branchField.placeholderString = @"branch (default: main)";
@@ -1774,8 +1781,14 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
 
     if ([a runModal] != NSAlertFirstButtonReturn) return;
 
+    // A wrapped multi-line field invites stray newlines in a pasted URL;
+    // URLs contain no whitespace, so strip it all before parsing.
+    NSString *rawInput = [[urlField.stringValue
+        componentsSeparatedByCharactersInSet:
+            [NSCharacterSet whitespaceAndNewlineCharacterSet]]
+        componentsJoinedByString:@""];
     NSString *display = nil;
-    NSString *spec = [RemoteJsonlFetcher specForInput:urlField.stringValue
+    NSString *spec = [RemoteJsonlFetcher specForInput:rawInput
                                                branch:branchField.stringValue
                                               display:&display];
     if (!spec) {
@@ -1783,8 +1796,9 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
         bad.messageText = @"Can't understand that repository";
         bad.informativeText =
             @"Enter a GitHub repo as owner/repo (or its github.com URL), "
-            @"or a full https:// URL pointing straight at a raw "
-            @"issues.jsonl file.";
+            @"a self-hosted Gitea/Forgejo repo URL like "
+            @"http(s)://host/owner/repo, or a full URL pointing straight "
+            @"at a raw issues.jsonl file.";
         [bad addButtonWithTitle:@"OK"];
         [bad runModal];
         return;

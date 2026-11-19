@@ -68,11 +68,40 @@ static BOOL parseGitHubOwnerRepo(NSString *input,
         return [NSString stringWithFormat:@"github.com/%@/%@@%@", owner, repo, br];
     }
 
-    // Direct URL to a raw file (any forge). https only — a plain-http
-    // host would need an ATS exception in the HOST app's Info.plist.
-    if ([in.lowercaseString hasPrefix:@"https://"]) {
+    // Self-hosted forge or direct raw URL (nppmac-iik). http:// is
+    // accepted: ATS does not apply to IP-literal or .local hosts (it
+    // still blocks public-hostname http inside the apps on its own), and
+    // LAN git servers are exactly where plain http lives.
+    NSString *lower = in.lowercaseString;
+    if ([lower hasPrefix:@"https://"] || [lower hasPrefix:@"http://"]) {
+        if ([lower hasSuffix:@".git"]) in = [in substringToIndex:in.length - 4];
         NSURL *url = [NSURL URLWithString:in];
         if (!url || url.host.length == 0 || url.path.length < 2) return nil;
+        NSString *hostPort = url.port
+            ? [NSString stringWithFormat:@"%@:%@", url.host, url.port]
+            : url.host;
+        // Repo-page URL — exactly /owner/repo, no query, not a file —
+        // derives the Gitea/Forgejo raw layout:
+        //   {scheme}://{host}/{owner}/{repo}/raw/branch/{branch}/.beads/issues.jsonl
+        // The derived raw URL becomes the spec, so fetching, Bearer auth
+        // and Keychain identity ride the existing direct-URL machinery.
+        // (GitLab's /-/raw/ layout differs — paste its raw URL directly.)
+        NSArray<NSString *> *parts =
+            [[url.path stringByTrimmingCharactersInSet:
+              [NSCharacterSet characterSetWithCharactersInString:@"/"]]
+             componentsSeparatedByString:@"/"];
+        BOOL looksLikeFile = [url.lastPathComponent.lowercaseString hasSuffix:@".jsonl"];
+        if (parts.count == 2 && parts[0].length && parts[1].length &&
+            url.query.length == 0 && !looksLikeFile) {
+            NSString *brEnc = [br stringByAddingPercentEncodingWithAllowedCharacters:
+                               [NSCharacterSet URLPathAllowedCharacterSet]];
+            if (outDisplay) *outDisplay = [NSString stringWithFormat:@"%@/%@/%@ @ %@",
+                                           hostPort, parts[0], parts[1], br];
+            return [NSString stringWithFormat:
+                    @"%@://%@/%@/%@/raw/branch/%@/.beads/issues.jsonl",
+                    url.scheme, hostPort, parts[0], parts[1], brEnc];
+        }
+        // Anything else: a direct link to the raw file, fetched as-is.
         if (outDisplay) *outDisplay = [NSString stringWithFormat:@"%@ (%@)",
                                        url.host, url.lastPathComponent];
         return url.absoluteString;

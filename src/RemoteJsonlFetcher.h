@@ -13,8 +13,13 @@
 //              PAT with Contents: Read-only (Option A per nppmac-0th);
 //              authenticated conditional GETs that 304 don't count against
 //              GitHub's rate limit.
-// Any direct https URL to a raw issues.jsonl (GitLab/Gitea/self-hosted) is
-// fetched as-is; a token, when present, is sent as Authorization: Bearer.
+// Self-hosted forges (nppmac-iik): a repo-page URL shaped like
+// {scheme}://{host}[:port]/{owner}/{repo} auto-derives the Gitea/Forgejo
+// raw layout ({repo}/raw/branch/{branch}/.beads/issues.jsonl); any other
+// http(s) URL is fetched as-is (GitLab: paste its raw URL directly). A
+// token, when present, is sent as Authorization: Bearer — Gitea accepts
+// that form. http:// is allowed: ATS exempts IP-literal/.local hosts and
+// still blocks public-hostname http inside the apps on its own.
 //
 // Tokens live ONLY in the login Keychain (service "NppBeads Remote",
 // account = the connection spec). Never in NSUserDefaults, never logged.
@@ -30,10 +35,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 // ── Spec parsing ─────────────────────────────────────────────────────
 // Turn user input — "owner/repo", "github.com/owner/repo",
-// "https://github.com/owner/repo(.git)", or a direct https URL to a raw
+// "https://github.com/owner/repo(.git)", a self-hosted forge repo URL
+// ("http(s)://host[:port]/owner/repo"), or a direct http(s) URL to a raw
 // issues.jsonl — plus an optional branch (default "main") into the
 // canonical connection spec: "github.com/{o}/{r}@{branch}" for GitHub,
-// the absolute URL string otherwise. The spec is the stable identity:
+// the (possibly derived) absolute raw URL string otherwise. The spec is the stable identity:
 // Keychain account, MRU dedupe key, and BeadsProject.remoteSpec.
 // Returns nil when the input can't be understood. outDisplay receives a
 // short human label ("owner/repo @ main", or the URL's host + file).
