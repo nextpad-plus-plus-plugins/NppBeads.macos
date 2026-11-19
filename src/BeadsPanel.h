@@ -86,6 +86,13 @@ typedef NS_ENUM(NSInteger, BeadsThemePref) {
 - (instancetype)initWithFrame:(NSRect)frame NS_UNAVAILABLE;
 - (instancetype)initWithCoder:(NSCoder *)c NS_UNAVAILABLE;
 
+// Remote-connection MRU (nppmac-0th) — newest first, dicts with keys
+// @"spec" (canonical RemoteJsonlFetcher spec) and @"display" (short
+// label). Exposed so the standalone app shell's launch restore can fall
+// back to the most recent remote connection when no local MRU project
+// resolves. Tokens are NOT in here — they live in the Keychain.
++ (NSArray<NSDictionary<NSString *, NSString *> *> *)persistedRecentRemotes;
+
 // Bind to a .beads/ project (or nil to clear). Triggers viewer reload.
 // When `project` is non-nil, its projectRoot is prepended to the
 // persisted `NppBeadsRecentProjectRoots` MRU list so it appears in the

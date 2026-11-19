@@ -41,6 +41,7 @@ set(BEADS_CORE_SOURCES
     src/BdDataSource.mm
     src/BeadsPoll.mm
     src/BdEventsTail.mm
+    src/RemoteJsonlFetcher.mm
     src/BeadIdIndicator.mm)
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -57,7 +58,8 @@ if(NPPBEADS_BUILD_PLUGIN)
     target_link_libraries(NppBeads PRIVATE
         "-framework Cocoa"
         "-framework WebKit"
-        "-framework UniformTypeIdentifiers")
+        "-framework UniformTypeIdentifiers"
+        "-framework Security")
     target_compile_options(NppBeads PRIVATE
         -Wall -Wno-unused-parameter
         -fvisibility=hidden
@@ -154,7 +156,8 @@ if(NPPBEADS_BUILD_APP)
     target_link_libraries(BeadsViewer PRIVATE
         "-framework Cocoa"
         "-framework WebKit"
-        "-framework UniformTypeIdentifiers")
+        "-framework UniformTypeIdentifiers"
+        "-framework Security")
     target_compile_options(BeadsViewer PRIVATE
         -Wall -Wno-unused-parameter
         # Release-only: optimize for size and let visibility=hidden

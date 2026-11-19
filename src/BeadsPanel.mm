@@ -8,6 +8,7 @@
 #import "BdDataSource.h"
 #import "BeadsPoll.h"
 #import "BdEventsTail.h"
+#import "RemoteJsonlFetcher.h"
 
 // ─────────────────────────────────────────────────────────────────────────
 //  Small helper: escape a string for embedding inside a JS string literal.
@@ -45,6 +46,9 @@ static NSString *jsStringLiteral(NSString *input) {
 // Persistent MRU of project root paths driving the switcher dropdown.
 // Capped at 10 entries.
 static NSString * const kBeadsRecentProjectsKey = @"NppBeadsRecentProjectRoots";
+// Remote-connection MRU (nppmac-0th): array of {spec, display} dicts,
+// newest first. Tokens are NEVER stored here — Keychain only.
+static NSString * const kBeadsRecentRemotesKey  = @"NppBeadsRecentRemotes";
 static const NSUInteger kBeadsRecentProjectsCap = 10;
 
 // Phase 3.5 — projects where the user has opted INTO bd auto-push.
@@ -102,6 +106,8 @@ static const CGFloat kBeadsZoomStep    = 0.10;
     BeadsPoll                *_poll;            // active only when bd backend is active
     BdEventsTail             *_tail;            // events-feed live sync (bd >= 1.3);
                                                 // mutually exclusive with _poll
+    RemoteJsonlFetcher       *_remote;          // remote read-only mode (nppmac-0th);
+                                                // mutually exclusive with both
     // Data-source priority: when YES the webview renders from the Dolt DB
     // (`bd export` to stdout) instead of the issues.jsonl file. Default on
     // in bd mode; per-project jsonl-priority flips it off (escape hatch).
@@ -172,6 +178,8 @@ static const CGFloat kBeadsZoomStep    = 0.10;
     _poll = nil;
     [_tail stop];
     _tail = nil;
+    [_remote stop];
+    _remote = nil;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -587,10 +595,24 @@ static const CGFloat kBeadsZoomStep    = 0.10;
         // metadata change in the new BeadsProject instance, but don't
         // tear down the webview.
         self.project = project;
-        [_ds bindToPath:project.jsonlPath];
-        [_watcher watchPath:project.jsonlPath];
-        if (project.projectRoot.length) {
-            [BeadsPanel _recordRecentProjectRoot:project.projectRoot];
+        if (project.isRemote) {
+            // No file bindings to refresh, and bindToPath: would reset
+            // fedExternally + drop the adopted remote text. Bump MRU and
+            // RESTART the fetcher: a re-connect to the same repo is how
+            // the user applies a new/removed token, and the fetcher reads
+            // the Keychain only at start.
+            [BeadsPanel _recordRecentRemoteSpec:project.remoteSpec
+                                        display:project.remoteDisplay];
+            [_remote stop];
+            _remote = nil;
+            _ds.fedExternally = YES;
+            [self _startRemoteFetch];
+        } else {
+            [_ds bindToPath:project.jsonlPath];
+            [_watcher watchPath:project.jsonlPath];
+            if (project.projectRoot.length) {
+                [BeadsPanel _recordRecentProjectRoot:project.projectRoot];
+            }
         }
         [self _refreshTitleBar];
         [self _refreshStatusBar];
@@ -610,6 +632,8 @@ static const CGFloat kBeadsZoomStep    = 0.10;
     _poll = nil;
     [_tail stop];
     _tail = nil;
+    [_remote stop];
+    _remote = nil;
     _renderFromBd = NO;        // until the new project's probe says otherwise
     _bcInFlight = NO;
     _bcPending  = NO;
@@ -623,7 +647,15 @@ static const CGFloat kBeadsZoomStep    = 0.10;
     // otherwise. Probe is async, so we default to JSONL immediately and
     // upgrade in the completion.
     _activeDataSource = _ds;
-    if (project.projectRoot.length) {
+    if (project.isRemote) {
+        // Remote read-only mode (nppmac-0th): no bd probe, no file
+        // watcher, no local files at all. JsonlDataSource renders
+        // whatever the HTTPS fetcher adopts; writes already throw
+        // ReadOnly. fedExternally AFTER bindToPath: (which reset it).
+        _bdRunner = nil;
+        _ds.fedExternally = YES;
+        [self _startRemoteFetch];
+    } else if (project.projectRoot.length) {
         _bdRunner = [[BdCommandRunner alloc] initWithProjectDir:project.projectRoot];
         // Phase 3.5 — honor per-project auto-push opt-in. Default is
         // useSandbox=YES (sandbox on, auto-push off). If this project's
@@ -678,8 +710,12 @@ static const CGFloat kBeadsZoomStep    = 0.10;
 
     // Record this bind in the cross-session MRU so the switcher dropdown
     // can offer it on next launch. Nil binds (explicit unbind or
-    // unusable project) are NOT recorded.
-    if (project.projectRoot.length) {
+    // unusable project) are NOT recorded. Remote connections have their
+    // own MRU (specs are not filesystem paths).
+    if (project.isRemote) {
+        [BeadsPanel _recordRecentRemoteSpec:project.remoteSpec
+                                    display:project.remoteDisplay];
+    } else if (project.projectRoot.length) {
         [BeadsPanel _recordRecentProjectRoot:project.projectRoot];
     }
 
@@ -775,6 +811,7 @@ static const CGFloat kBeadsZoomStep    = 0.10;
 }
 
 - (void)openBeadsDirInFinder:(id)sender {
+    if (self.project.isRemote) return;   // nothing on disk to reveal
     if (self.project.beadsDir.length == 0) return;
     [[NSWorkspace sharedWorkspace] selectFile:self.project.jsonlPath
                      inFileViewerRootedAtPath:self.project.beadsDir];
@@ -788,6 +825,44 @@ static const CGFloat kBeadsZoomStep    = 0.10;
 // per-project journal checkpoints, both keyed by standardized project root.
 static NSString * const kEventsPromptAnswersKey = @"NppBeadsEventsFeedAnswers";
 static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
+
+// ── Remote read-only mode (nppmac-0th) ───────────────────────────────
+// Start the HTTPS fetcher for the currently-bound remote project. The
+// token (if the user saved one) comes from the Keychain at bind time, so
+// a token added/rotated for an existing connection takes effect on the
+// next bind without any migration.
+- (void)_startRemoteFetch {
+    BeadsProject *project = self.project;
+    if (!project.isRemote) return;
+    NSString *token = [RemoteJsonlFetcher tokenForSpec:project.remoteSpec];
+    RemoteJsonlFetcher *remote =
+        [[RemoteJsonlFetcher alloc] initWithSpec:project.remoteSpec token:token];
+    __weak typeof(self) weakSelf = self;
+    __weak RemoteJsonlFetcher *captured = remote;   // identity-gates stale callbacks
+    remote.onText = ^(NSString *jsonl) {
+        __strong typeof(self) s = weakSelf;
+        if (!s || s->_remote != captured) return;   // superseded by later bind
+        s->_ds.fedExternally = YES;
+        [s->_ds adoptRawText:jsonl];
+        NSLog(@"[NppBeads] remote fetch: adopted %lu bytes",
+              (unsigned long)jsonl.length);
+        [s _installJsonlUserScript];
+        [s _refreshStatusBar];
+        if (s->_webView.URL && s->_viewerLoaded) [s _pushJsonlToWebview:jsonl];
+    };
+    remote.onError = ^(NSString *message) {
+        __strong typeof(self) s = weakSelf;
+        if (!s || s->_remote != captured) return;
+        NSLog(@"[NppBeads] remote fetch error: %@", message);
+        [s _refreshStatusBar];                      // surfaces lastError
+    };
+    _remote = remote;
+    [remote start];
+    // Match the window-key pause invariant immediately (same as _poll).
+    if (self.window && !self.window.isKeyWindow) [remote pause];
+    NSLog(@"[NppBeads] remote read-only mode: %@ (token: %@)",
+          project.remoteSpec, token.length ? @"from keychain" : @"none");
+}
 
 - (void)_startLiveSyncWithRunner:(BdCommandRunner *)runner {
     if (![runner supportsEventsFeed] || runner.bdPath.length == 0) {
@@ -924,6 +999,7 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
     // post-refresh state (prevents a ghost "changed" fire right after the
     // user hit Refresh). No-op in events-feed mode (_poll is nil there).
     [_poll kick];
+    [_remote kick];   // remote mode: fetch now instead of waiting a minute
 }
 
 // View-mode popup action: navigate webview without reloading data.
@@ -1449,7 +1525,9 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
     // Current project (checked, non-actionable label row). Hidden when
     // no project is bound — no value in showing "(no project) ✓".
     if (self.project) {
-        NSString *leaf = self.project.projectRoot.lastPathComponent ?: @"(project)";
+        NSString *leaf = self.project.isRemote
+            ? (self.project.remoteDisplay ?: self.project.remoteSpec)
+            : (self.project.projectRoot.lastPathComponent ?: @"(project)");
         NSMenuItem *cur = [[NSMenuItem alloc] initWithTitle:leaf
                                                      action:nil
                                               keyEquivalent:@""];
@@ -1504,11 +1582,37 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
     }
     if (anyListed) [m addItem:[NSMenuItem separatorItem]];
 
+    // Remote connections (nppmac-0th) — their own MRU section; specs are
+    // not filesystem paths so they never mix with the local list above.
+    NSArray<NSDictionary *> *remotes = [BeadsPanel persistedRecentRemotes];
+    BOOL anyRemote = NO;
+    for (NSDictionary *entry in remotes) {
+        NSString *spec = entry[@"spec"];
+        if (self.project.isRemote &&
+            [spec isEqualToString:self.project.remoteSpec]) continue;
+        NSString *title = [entry[@"display"] length] ? entry[@"display"] : spec;
+        NSMenuItem *it = [[NSMenuItem alloc] initWithTitle:[@"🌐 " stringByAppendingString:title]
+                                                    action:@selector(_didPickRecentRemote:)
+                                             keyEquivalent:@""];
+        it.target = self;
+        it.toolTip = spec;
+        it.representedObject = entry;
+        [m addItem:it];
+        anyRemote = YES;
+    }
+    if (anyRemote) [m addItem:[NSMenuItem separatorItem]];
+
     NSMenuItem *open = [[NSMenuItem alloc] initWithTitle:@"Open .beads folder…"
                                                   action:@selector(_didPickOpenBeadsDir:)
                                            keyEquivalent:@""];
     open.target = self;
     [m addItem:open];
+
+    NSMenuItem *connect = [[NSMenuItem alloc] initWithTitle:@"Connect to Remote Repository…"
+                                                     action:@selector(_didPickConnectRemote:)
+                                              keyEquivalent:@""];
+    connect.target = self;
+    [m addItem:connect];
 
     if (self.project) {
         NSMenuItem *clear = [[NSMenuItem alloc] initWithTitle:@"Unbind current project"
@@ -1595,6 +1699,103 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
 - (void)_didPickUnbind:(NSMenuItem *)sender {
     if (!self.project) return;
     [self bindProject:nil];
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+//  Remote connections (nppmac-0th) — connect sheet, MRU, rebind
+// ─────────────────────────────────────────────────────────────────────────
+
++ (NSArray<NSDictionary<NSString *, NSString *> *> *)persistedRecentRemotes {
+    NSArray *arr = [[NSUserDefaults standardUserDefaults]
+                    arrayForKey:kBeadsRecentRemotesKey];
+    if (![arr isKindOfClass:[NSArray class]]) return @[];
+    NSMutableArray *out = [NSMutableArray arrayWithCapacity:arr.count];
+    for (id e in arr) {
+        if (![e isKindOfClass:[NSDictionary class]]) continue;
+        if (![e[@"spec"] isKindOfClass:[NSString class]] ||
+            [e[@"spec"] length] == 0) continue;
+        [out addObject:e];
+    }
+    return out;
+}
+
++ (void)_recordRecentRemoteSpec:(NSString *)spec display:(NSString *)display {
+    if (spec.length == 0) return;
+    NSMutableArray *list = [[BeadsPanel persistedRecentRemotes] mutableCopy];
+    [list filterUsingPredicate:[NSPredicate predicateWithBlock:
+        ^BOOL(NSDictionary *e, NSDictionary *bindings) {
+            return ![e[@"spec"] isEqualToString:spec];
+        }]];
+    [list insertObject:@{@"spec": spec, @"display": display ?: spec} atIndex:0];
+    while (list.count > 10) [list removeLastObject];
+    [[NSUserDefaults standardUserDefaults] setObject:list
+                                              forKey:kBeadsRecentRemotesKey];
+}
+
+- (void)_didPickRecentRemote:(NSMenuItem *)sender {
+    NSDictionary *entry = [sender.representedObject isKindOfClass:[NSDictionary class]]
+                          ? sender.representedObject : nil;
+    NSString *spec = entry[@"spec"];
+    if (spec.length == 0) return;
+    BeadsProject *p = [BeadsProjectScanner remoteProjectWithSpec:spec
+                                                         display:entry[@"display"]];
+    if (p) [self bindProject:p];
+}
+
+- (void)_didPickConnectRemote:(NSMenuItem *)sender {
+    NSAlert *a = [[NSAlert alloc] init];
+    a.messageText = @"Connect to Remote Repository";
+    a.informativeText =
+        @"Monitors a repository's .beads/issues.jsonl over HTTPS — "
+        @"read-only, refreshed every minute.\n\n"
+        @"Private GitHub repositories need a fine-grained personal access "
+        @"token with “Contents: Read-only” permission "
+        @"(github.com ▸ Settings ▸ Developer settings). The token "
+        @"is kept in your Keychain.";
+    [a addButtonWithTitle:@"Connect"];
+    [a addButtonWithTitle:@"Cancel"];
+
+    const CGFloat W = 340, H = 24, GAP = 6;
+    NSView *box = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, W, 3*H + 2*GAP)];
+    NSTextField *urlField = [[NSTextField alloc] initWithFrame:
+                             NSMakeRect(0, 2*(H+GAP), W, H)];
+    urlField.placeholderString = @"github.com/owner/repo — or a raw issues.jsonl URL";
+    NSTextField *branchField = [[NSTextField alloc] initWithFrame:
+                                NSMakeRect(0, H+GAP, W, H)];
+    branchField.placeholderString = @"branch (default: main)";
+    NSSecureTextField *tokenField = [[NSSecureTextField alloc] initWithFrame:
+                                     NSMakeRect(0, 0, W, H)];
+    tokenField.placeholderString = @"access token (optional — private repos)";
+    [box addSubview:urlField];
+    [box addSubview:branchField];
+    [box addSubview:tokenField];
+    a.accessoryView = box;
+    [a.window setInitialFirstResponder:urlField];
+
+    if ([a runModal] != NSAlertFirstButtonReturn) return;
+
+    NSString *display = nil;
+    NSString *spec = [RemoteJsonlFetcher specForInput:urlField.stringValue
+                                               branch:branchField.stringValue
+                                              display:&display];
+    if (!spec) {
+        NSAlert *bad = [[NSAlert alloc] init];
+        bad.messageText = @"Can't understand that repository";
+        bad.informativeText =
+            @"Enter a GitHub repo as owner/repo (or its github.com URL), "
+            @"or a full https:// URL pointing straight at a raw "
+            @"issues.jsonl file.";
+        [bad addButtonWithTitle:@"OK"];
+        [bad runModal];
+        return;
+    }
+    // Store (or clear) the token BEFORE binding — _startRemoteFetch reads
+    // it back from the Keychain. An empty field on reconnect deliberately
+    // forgets a previously saved token.
+    [RemoteJsonlFetcher storeToken:tokenField.stringValue forSpec:spec];
+    BeadsProject *p = [BeadsProjectScanner remoteProjectWithSpec:spec
+                                                         display:display];
+    if (p) [self bindProject:p];
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1751,11 +1952,13 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
 // ─────────────────────────────────────────────────────────────────────────
 - (void)_refreshTitleBar {
     if (self.project) {
-        NSString *leaf = self.project.projectRoot.lastPathComponent ?: @"(project)";
+        NSString *leaf = self.project.isRemote
+            ? (self.project.remoteDisplay ?: self.project.remoteSpec)
+            : (self.project.projectRoot.lastPathComponent ?: @"(project)");
         _projectChip.title    = [leaf stringByAppendingString:@" ▾"];
         _projectChip.toolTip  = self.project.projectRoot;
         _refreshButton.enabled = YES;
-        _openDirButton.enabled = YES;
+        _openDirButton.enabled = !self.project.isRemote;  // no local dir to reveal
         _viewModePopup.enabled = YES;
         _searchField.enabled   = YES;
     } else {
@@ -1790,6 +1993,26 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
 - (void)_refreshStatusBar {
     if (!self.project) {
         _statusLabel.stringValue = @"no project · click the project name ▾ to pick one";
+        return;
+    }
+    if (self.project.isRemote) {
+        NSString *display = self.project.remoteDisplay ?: self.project.remoteSpec;
+        NSString *err = _remote.lastError;
+        if (err.length) {
+            _statusLabel.stringValue = [NSString stringWithFormat:
+                @"%@ · remote · ⚠ %@", display, err];
+            return;
+        }
+        NSUInteger newCount = [self _newActivityCountSinceLastVisit];
+        NSString *badge = (newCount > 0)
+            ? [NSString stringWithFormat:@" · ● %lu new", (unsigned long)newCount]
+            : @"";
+        _statusLabel.stringValue = [NSString stringWithFormat:
+            @"%@ · %lu issues (%lu open · %lu blocked · %lu closed) · remote · read-only%@",
+            display,
+            (unsigned long)[_ds issueCount], (unsigned long)[_ds openIssueCount],
+            (unsigned long)[_ds blockedIssueCount], (unsigned long)[_ds closedIssueCount],
+            badge];
         return;
     }
     if (!self.project.jsonlPath) {
@@ -2402,6 +2625,7 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
         // live sync defensively — nothing to display on anyway.
         [_poll pause];
         [_tail pause];
+        [_remote pause];
         return;
     }
 
@@ -2412,13 +2636,14 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
 
     // Snapshot current state so we match reality (e.g. panel attached
     // to a non-key window during a dock restore).
-    if (w.isKeyWindow) { [_poll resume]; [_tail resume]; }
-    else               { [_poll pause];  [_tail pause];  }
+    if (w.isKeyWindow) { [_poll resume]; [_tail resume]; [_remote resume]; }
+    else               { [_poll pause];  [_tail pause];  [_remote pause];  }
 }
 
 - (void)_hostWindowBecameKey:(NSNotification *)note {
     [_poll resume];
     [_tail resume];   // flushes any change that arrived while blurred
+    [_remote resume]; // catch-up fetch if a poll tick was skipped
     // Phase 6 — user is back; recompute the "N new" badge against any
     // JSONL that landed while the panel was blurred.
     [self _refreshStatusBar];
@@ -2427,6 +2652,7 @@ static NSString * const kEventsSeqKeyPrefix     = @"NppBeadsEventsSeq.";
 - (void)_hostWindowResignedKey:(NSNotification *)note {
     [_poll pause];
     [_tail pause];
+    [_remote pause];
 }
 
 // Called by NppBeads.mm every time the user shows the panel. Resets

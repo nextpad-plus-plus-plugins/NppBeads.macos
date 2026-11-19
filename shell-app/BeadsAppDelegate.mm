@@ -44,6 +44,16 @@ static NSString * const kBeadsHasLaunchedKey    = @"BeadsHasLaunched";
     BeadsProject *firstProj = firstMRU.length
         ? [BeadsProjectScanner projectFromRoot:firstMRU]
         : nil;
+    if (!firstProj) {
+        // No resolvable local project — fall back to the most recent
+        // REMOTE connection (nppmac-0th). This is the manager persona:
+        // nothing on disk, monitoring a repo over HTTPS.
+        NSDictionary *remote = [BeadsPanel persistedRecentRemotes].firstObject;
+        if (remote) {
+            firstProj = [BeadsProjectScanner remoteProjectWithSpec:remote[@"spec"]
+                                                           display:remote[@"display"]];
+        }
+    }
 
     NSUserDefaults *def = [NSUserDefaults standardUserDefaults];
     BOOL firstLaunch = ![def boolForKey:kBeadsHasLaunchedKey];

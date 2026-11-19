@@ -26,6 +26,16 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) NSString *dbPath;
 // Repo/project root (parent of .beads/).
 @property (nonatomic, copy) NSString *projectRoot;
+
+// Remote read-only project (nppmac-0th). When remoteSpec is set the
+// project has NO local filesystem presence: beadsDir/projectRoot carry
+// the canonical spec string (stable identity for dedupe/MRU/Keychain),
+// jsonlPath/dbPath are nil, and the panel fetches issues.jsonl over
+// HTTPS (RemoteJsonlFetcher) instead of probing bd or watching files.
+@property (nonatomic, copy, nullable) NSString *remoteSpec;
+// Short human label for the chip/status bar, e.g. "owner/repo @ main".
+@property (nonatomic, copy, nullable) NSString *remoteDisplay;
+- (BOOL)isRemote;
 @end
 
 @interface BeadsProjectScanner : NSObject
@@ -49,6 +59,12 @@ NS_ASSUME_NONNULL_BEGIN
 // `.beads/`). Convenience for loading from persisted `nppbeads.recentProjects`
 // entries. Returns nil if the root has no usable .beads/.
 + (nullable BeadsProject *)projectFromRoot:(NSString *)projectRoot;
+
+// Build a remote read-only project (nppmac-0th) from a canonical spec
+// (see RemoteJsonlFetcher.specForInput:…). No filesystem validation —
+// reachability is discovered by the first fetch.
++ (nullable BeadsProject *)remoteProjectWithSpec:(NSString *)spec
+                                         display:(nullable NSString *)display;
 
 // Walk UP from each input path (file or directory), collect the unique
 // .beads/ ancestors found, and materialize a BeadsProject for each.

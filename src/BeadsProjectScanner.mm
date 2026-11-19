@@ -1,9 +1,26 @@
 #import "BeadsProjectScanner.h"
 
 @implementation BeadsProject
+- (BOOL)isRemote { return self.remoteSpec.length > 0; }
 @end
 
 @implementation BeadsProjectScanner
+
++ (BeadsProject *)remoteProjectWithSpec:(NSString *)spec
+                                display:(NSString *)display {
+    if (spec.length == 0) return nil;
+    BeadsProject *p = [[BeadsProject alloc] init];
+    // The spec doubles as beadsDir/projectRoot so every string-identity
+    // code path (same-project dedupe, per-project defaults keys, chip
+    // tooltip) works unchanged. jsonlPath/dbPath stay nil: there is no
+    // file — the panel's RemoteJsonlFetcher feeds JsonlDataSource via
+    // adoptRawText:.
+    p.beadsDir      = spec;
+    p.projectRoot   = spec;
+    p.remoteSpec    = spec;
+    p.remoteDisplay = display.length ? display : spec;
+    return p;
+}
 
 + (BOOL)isUsableBeadsDir:(NSString *)beadsDir {
     if (beadsDir.length == 0) return NO;
